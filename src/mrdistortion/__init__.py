@@ -11,7 +11,8 @@ the grid, and resample.
 Susceptibility distortion is a property of the subject, not the scanner. It is
 measured rather than looked up, and what measures it is a second acquisition
 with the phase encoding reversed. That estimation is PyHySCO's, which is
-GPL-3.0-only and therefore called as a program rather than imported.
+GPL-3.0-only and therefore an optional extra: it is imported inside the call
+that needs it, and never bundled.
 
 No vendor coefficient table is bundled or persisted. A site whose coefficients
 are not a file satisfies :class:`CoefficientAccessor` instead.
@@ -28,7 +29,7 @@ from ._gradunwarp import (
     Gradunwarp,
     ImageGeometry,
 )
-from ._pyhysco import run_pyhysco
+from ._pyhysco import SusceptibilityCorrection, correct_susceptibility
 from ._spiral import (
     ReadoutTiming,
     SpiralTransfer,
@@ -49,9 +50,10 @@ __all__ = [
     "ImageGeometry",
     "ReadoutTiming",
     "SpiralTransfer",
+    "SusceptibilityCorrection",
     "__version__",
     "autofocus",
+    "correct_susceptibility",
     "deblur",
     "fit_transfer",
-    "run_pyhysco",
 ]
