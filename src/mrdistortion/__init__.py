@@ -29,7 +29,13 @@ from ._gradunwarp import (
     ImageGeometry,
 )
 from ._pyhysco import run_pyhysco
-from ._spiral import ReadoutTiming, SpiralTransfer, deblur, fit_transfer
+from ._spiral import (
+    ReadoutTiming,
+    SpiralTransfer,
+    autofocus,
+    deblur,
+    fit_transfer,
+)
 
 try:
     __version__ = _distribution_version(__name__)
@@ -44,6 +50,7 @@ __all__ = [
     "ReadoutTiming",
     "SpiralTransfer",
     "__version__",
+    "autofocus",
     "deblur",
     "fit_transfer",
     "run_pyhysco",

@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import torch
 
-from mrdistortion import ReadoutTiming, deblur, fit_transfer
+from mrdistortion import ReadoutTiming, autofocus, deblur, fit_transfer
 
 requires_cuda = pytest.mark.skipif(
     not torch.cuda.is_available(), reason="needs a CUDA device"
@@ -171,3 +171,68 @@ def test_peak_memory_does_not_grow_with_terms(timing: ReadoutTiming) -> None:
         torch.cuda.synchronize()
         peaks.append(torch.cuda.max_memory_allocated())
     assert peaks[1] <= 1.05 * peaks[0]
+
+
+def structured_phantom(size: int) -> np.ndarray:
+    """Ellipses carrying a smooth object phase, as a real acquisition would."""
+    rows, columns = np.mgrid[0:size, 0:size] / (size / 2) - 1
+    image = np.zeros((size, size))
+    for row, column, height, width, value in (
+        (0.0, 0.0, 0.75, 0.60, 1.0),
+        (-0.15, 0.0, 0.25, 0.35, 0.55),
+        (0.32, -0.28, 0.13, 0.09, 0.8),
+        (0.32, 0.28, 0.13, 0.09, 0.8),
+    ):
+        inside = ((rows - row) / height) ** 2 + ((columns - column) / width) ** 2
+        image[inside <= 1] += value
+    return image * np.exp(1j * 0.7 * (columns + 0.5 * rows))
+
+
+def gradient_field(size: int, amplitude: float) -> np.ndarray:
+    """A quantised shim-like field map, so the forward blur can be exact."""
+    rows, columns = np.mgrid[0:size, 0:size] / (size / 2) - 1
+    smooth = amplitude * (0.7 * columns + 0.3 * rows)
+    levels = np.linspace(smooth.min(), smooth.max(), 24)
+    return levels[np.abs(smooth[..., None] - levels).argmin(-1)]
+
+
+def test_autofocus_approaches_the_oracle(timing: ReadoutTiming) -> None:
+    size = 128
+    image = structured_phantom(size)
+    field = gradient_field(size, 70.0)
+    ideal, blurred = blur(image, timing, field)
+    transfer = fit_transfer(timing, band=90.0, terms=6, frequencies=61)
+
+    oracle = deblur(torch.from_numpy(blurred), torch.from_numpy(field), transfer)
+    estimated, _ = autofocus(torch.from_numpy(blurred), transfer)
+
+    before = relative(blurred, ideal)
+    with_map = relative(oracle.numpy(), ideal)
+    without = relative(estimated.numpy(), ideal)
+    assert with_map < 0.6 * before
+    # Not having a field map should cost little; the metric only has to find the
+    # basin, not the exact frequency.
+    assert without < 1.4 * with_map
+
+
+def test_autofocus_rejects_a_batched_image(timing: ReadoutTiming) -> None:
+    transfer = fit_transfer(timing, band=80.0, terms=4)
+    with pytest.raises(ValueError, match="2D or 3D"):
+        autofocus(torch.zeros(2, 8, 8, 8, dtype=torch.complex64), transfer)
+
+
+@requires_cuda
+def test_autofocus_runs_on_cuda(timing: ReadoutTiming) -> None:
+    size = 128
+    image = structured_phantom(size)
+    field = gradient_field(size, 70.0)
+    ideal, blurred = blur(image, timing, field)
+    transfer = fit_transfer(timing, band=90.0, terms=6, frequencies=41)
+
+    on_host, _ = autofocus(torch.from_numpy(blurred), transfer)
+    on_device, _ = autofocus(
+        torch.from_numpy(blurred).to(torch.complex64).cuda(), transfer
+    )
+    assert relative(on_device.cpu().numpy(), ideal) < 1.05 * relative(
+        on_host.numpy(), ideal
+    )
