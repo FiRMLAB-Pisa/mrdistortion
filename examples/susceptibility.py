@@ -46,9 +46,11 @@ def main() -> None:
     print(f"pair {tuple(blip_up.shape)}, imposed displacement up to "
           f"{shift.max():.1f} voxels")
 
-    # alpha weights the smoothness of the field, and has to suit the scale the
-    # field actually varies on: PyHySCO's default of 300 flattens a lobe this
-    # compact, and the pair ends up agreeing less well than it started.
+    # alpha weights the smoothness of the field and has to suit the scale the
+    # field varies on. PyHySCO's default of 300 suits a real acquisition, where
+    # susceptibility varies over centimetres; it flattens a lobe as compact as
+    # the one simulated here, and the pair ends up agreeing less well than it
+    # started.
     result = mrd.correct_susceptibility(
         blip_up,
         blip_down,

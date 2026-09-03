@@ -17,7 +17,7 @@ import torch
 import mrdistortion as mrd
 
 SIZE = 192
-READOUT_S = 8e-3
+READOUT_S = 12e-3
 
 
 def variable_density_arm(samples: int = 1500) -> np.ndarray:
@@ -41,6 +41,9 @@ def phantom(size: int) -> np.ndarray:
     ):
         inside = ((rows - row) / height) ** 2 + ((columns - column) / width) ** 2
         image[inside <= 1] += value
+    # Fine structure, so the blur has something to smear.
+    body = image > 0
+    image[body] += 0.25 * (np.sin(22 * rows) * np.cos(19 * columns))[body]
     return image * np.exp(1j * 0.7 * (columns + 0.5 * rows))
 
 
@@ -48,7 +51,7 @@ def main() -> None:
     timing = mrd.ReadoutTiming.from_trajectory(
         variable_density_arm(), duration=READOUT_S
     )
-    transfer = mrd.fit_transfer(timing, band=150.0, terms=8)
+    transfer = mrd.fit_transfer(timing, band=250.0, terms=16)
     print(f"{transfer.terms} separable terms, "
           f"transfer error {transfer.error(timing):.4f}")
 
@@ -63,7 +66,9 @@ def main() -> None:
     ideal = np.fft.ifft2(np.fft.fft2(truth) * disc)
 
     rows, columns = np.mgrid[0:SIZE, 0:SIZE] / (SIZE / 2) - 1
-    smooth = 110 * (0.7 * columns + 0.3 * rows) + 50 * np.exp(
+    # +-250 Hz over a 12 ms readout is three cycles of accrued phase, which is
+    # what an air-tissue interface does and what makes the blur unmistakable.
+    smooth = 200 * (0.7 * columns + 0.3 * rows) + 90 * np.exp(
         -((columns + 0.3) ** 2 + (rows - 0.3) ** 2) / 0.06
     )
     levels = np.linspace(smooth.min(), smooth.max(), 32)
@@ -96,7 +101,7 @@ def main() -> None:
         axis_.set_title(title)
         axis_.set_xticks([])
         axis_.set_yticks([])
-    shown = axes[3].imshow(field, cmap="RdBu_r", vmin=-150, vmax=150)
+    shown = axes[3].imshow(field, cmap="RdBu_r", vmin=-300, vmax=300)
     axes[3].set_title("field map")
     axes[3].set_xticks([])
     axes[3].set_yticks([])

@@ -23,6 +23,16 @@ field, which a single-echo acquisition already carries in its phase.
 
 ![what each correction does](examples/figures/showcase.png)
 
+The gradient and susceptibility columns are acquired data: a GE body gradient
+coil's own coefficient table applied to a phantom it was measured on, and a
+spin-echo EPI pair from [OpenNeuro ds003653](https://openneuro.org/datasets/ds003653).
+Against the vendor's own Orchestra `GradwarpCorrector` on that volume, this
+package agrees to **correlation 0.999876, nRMSE 1.3%** — the difference is a
+sub-voxel rim at the phantom's sharpest edge
+([figure](examples/figures/gradwarp_vs_orchestra.png)). Neither the coefficient
+table nor the vendor code is redistributable, so neither is here; the images
+are.
+
 - **Vendor-neutral coefficients** — GE `.dat`, Siemens `.grad` and a plain
   `Alpha/Beta` table parse into one representation, with the documented
   conversion factors rather than a fitted approximation. The table states the
@@ -39,7 +49,8 @@ field, which a single-echo acquisition already carries in its phase.
   those same images
 - **Tensors throughout, including PyHySCO** — it is GPL-3.0-only and so an
   optional extra, but it is torch-based, so the pair goes in and the field comes
-  back without a NIfTI touching disk
+  back without a NIfTI touching disk. A 104x104x72 pair corrects in about 10 s
+  on one GPU, bringing the two acquisitions into agreement a thousandfold
 
 ## Quick Start
 
@@ -83,7 +94,7 @@ Each runs on its own and writes the figure it describes:
 | [`spiral_deblurring.py`](examples/spiral_deblurring.py) | Blur simulated exactly from a quantised field, then removed |
 | [`field_map_from_phase.py`](examples/field_map_from_phase.py) | Two localised lobes recovered from coil phase alone |
 | [`susceptibility.py`](examples/susceptibility.py) | A reversed-polarity pair brought back into register |
-| [`make_showcase.py`](examples/make_showcase.py) | The figure above |
+| [`make_showcase.py`](examples/make_showcase.py) | The figures above, from acquired data when `GRADWARP_DATA` and `EPI_DATA` point at it, simulated otherwise |
 
 ## Related Works
 

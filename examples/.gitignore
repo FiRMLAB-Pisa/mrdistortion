@@ -1,2 +1,2 @@
 *.png
-!figures/showcase.png
+!figures/*.png
