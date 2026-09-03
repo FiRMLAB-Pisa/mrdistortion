@@ -23,6 +23,7 @@ from __future__ import annotations
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _distribution_version
 
+from ._fieldmap import field_map_from_phase
 from ._gradunwarp import (
     CoefficientAccessor,
     GradientCoefficients,
@@ -30,13 +31,7 @@ from ._gradunwarp import (
     ImageGeometry,
 )
 from ._pyhysco import SusceptibilityCorrection, correct_susceptibility
-from ._spiral import (
-    ReadoutTiming,
-    SpiralTransfer,
-    autofocus,
-    deblur,
-    fit_transfer,
-)
+from ._spiral import ReadoutTiming, SpiralTransfer, deblur, fit_transfer
 
 try:
     __version__ = _distribution_version(__name__)
@@ -52,8 +47,8 @@ __all__ = [
     "SpiralTransfer",
     "SusceptibilityCorrection",
     "__version__",
-    "autofocus",
     "correct_susceptibility",
     "deblur",
+    "field_map_from_phase",
     "fit_transfer",
 ]
