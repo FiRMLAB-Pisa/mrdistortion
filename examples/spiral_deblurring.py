@@ -18,6 +18,8 @@ import mrdistortion as mrd
 
 SIZE = 256
 READOUT_S = 12e-3
+BAND_HZ = 260.0
+TERMS = 24
 
 
 def variable_density_arm(samples: int = 1500) -> np.ndarray:
@@ -28,42 +30,23 @@ def variable_density_arm(samples: int = 1500) -> np.ndarray:
     return np.stack([radius * np.cos(angle), radius * np.sin(angle)], axis=1)
 
 
-def phantom(size: int) -> np.ndarray:
-    """A BrainWeb T1 slice, with the smooth object phase an acquisition has.
-
-    Off-resonance blur is a smearing of structure, so what it does is only
-    visible on something that has structure. Falls back to ellipses when
-    ``brainweb-dl`` is not installed, which understates the artefact.
-    """
-    rows, columns = np.mgrid[0:size, 0:size] / (size / 2) - 1
+def scene(size: int):
+    """A BrainWeb slice, the field its own tissue makes, and the head."""
     try:
-        from brainweb_dl import get_mri
-    except ImportError:
-        print("brainweb-dl not installed; falling back to ellipses")
-        image = np.zeros((size, size))
-        for row, column, height, width, value in (
-            (0.0, 0.0, 0.75, 0.60, 1.0),
-            (-0.15, 0.0, 0.25, 0.35, 0.55),
-            (0.32, -0.28, 0.13, 0.09, 0.8),
-            (0.32, 0.28, 0.13, 0.09, 0.8),
-        ):
-            inside = ((rows - row) / height) ** 2 + ((columns - column) / width) ** 2
-            image[inside <= 1] += value
-    else:
-        volume = get_mri(sub_id=4, contrast="T1")
-        image = np.asarray(volume[90], dtype=float)
-        image = image / image.max()
-        if image.shape[0] != size:
-            index = np.linspace(0, image.shape[0] - 1, size).round().astype(int)
-            image = image[np.ix_(index, index)]
-    return image * np.exp(1j * 0.7 * (columns + 0.5 * rows))
+        from _brainweb import brain_and_field
+    except ImportError:  # pragma: no cover
+        raise SystemExit("this example needs brainweb-dl and scipy") from None
+    image, field, mask = brain_and_field(slice_index=60, size=size)
+    rows, columns = np.mgrid[0:size, 0:size] / (size / 2) - 1
+    # The smooth object phase any acquisition carries.
+    return image * np.exp(1j * 0.7 * (columns + 0.5 * rows)), field, mask
 
 
 def main() -> None:
     timing = mrd.ReadoutTiming.from_trajectory(
         variable_density_arm(), duration=READOUT_S
     )
-    transfer = mrd.fit_transfer(timing, band=250.0, terms=16)
+    transfer = mrd.fit_transfer(timing, band=BAND_HZ, terms=TERMS)
     print(f"{transfer.terms} separable terms, "
           f"transfer error {transfer.error(timing):.4f}")
 
@@ -74,32 +57,27 @@ def main() -> None:
         np.clip(squared, 0, 1), timing.squared_radius, timing.times
     )
 
-    truth = phantom(SIZE)
+    truth, field, mask = scene(SIZE)
     ideal = np.fft.ifft2(np.fft.fft2(truth) * disc)
 
-    rows, columns = np.mgrid[0:SIZE, 0:SIZE] / (SIZE / 2) - 1
-    # +-250 Hz over a 12 ms readout is three cycles of accrued phase, which is
-    # what an air-tissue interface does and what makes the blur unmistakable.
-    smooth = 200 * (0.7 * columns + 0.3 * rows) + 90 * np.exp(
-        -((columns + 0.3) ** 2 + (rows - 0.3) ** 2) / 0.06
-    )
-    levels = np.linspace(smooth.min(), smooth.max(), 32)
-    field = levels[np.abs(smooth[..., None] - levels).argmin(-1)]
-
+    # Blur exactly, by summing over the distinct values of a quantised field.
+    # Coarse quantisation shows up as concentric rings, so use plenty of levels.
+    levels = np.linspace(field.min(), field.max(), 200)
+    quantised = levels[np.abs(field[..., None] - levels).argmin(-1)]
     blurred = np.zeros_like(ideal)
-    for value in np.unique(field):
-        selected = np.fft.fft2(truth * (field == value)) * disc
+    for value in np.unique(quantised):
+        selected = np.fft.fft2(truth * (quantised == value)) * disc
         blurred += np.fft.ifft2(
             selected * np.exp(2j * np.pi * value * READOUT_S * times)
         )
 
     corrected = mrd.deblur(
-        torch.from_numpy(blurred), torch.from_numpy(field), transfer
+        torch.from_numpy(blurred), torch.from_numpy(quantised), transfer
     ).numpy()
 
     error = lambda x: np.linalg.norm(x - ideal) / np.linalg.norm(ideal)
-    print(f"field {field.min():+.0f} .. {field.max():+.0f} Hz over a "
-          f"{READOUT_S * 1e3:.0f} ms readout")
+    print(f"field in the head {field[mask].mean():+.0f} +- {field[mask].std():.0f} Hz, "
+          f"up to {field[mask].max():+.0f}, over a {READOUT_S * 1e3:.0f} ms readout")
     print(f"error: blurred {error(blurred):.4f} -> corrected {error(corrected):.4f}")
 
     figure, axes = plt.subplots(1, 4, figsize=(15, 4.2))
@@ -113,7 +91,8 @@ def main() -> None:
         axis_.set_title(title)
         axis_.set_xticks([])
         axis_.set_yticks([])
-    shown = axes[3].imshow(field, cmap="RdBu_r", vmin=-300, vmax=300)
+    shown = axes[3].imshow(np.where(mask, field, np.nan), cmap="jet",
+                           vmin=-200, vmax=200)
     axes[3].set_title("field map")
     axes[3].set_xticks([])
     axes[3].set_yticks([])

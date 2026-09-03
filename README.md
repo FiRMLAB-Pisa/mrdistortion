@@ -26,6 +26,10 @@ field, which a single-echo acquisition already carries in its phase.
 The gradient and susceptibility columns are acquired data: a GE body gradient
 coil's own coefficient table applied to a phantom it was measured on, and a
 spin-echo EPI pair from [OpenNeuro ds003653](https://openneuro.org/datasets/ds003653).
+The spiral column blurs a BrainWeb slice with the field its own tissue would
+produce -- the susceptibility forward model over BrainWeb's tissue labels, so
+the lobes sit at the frontal sinus and the ear canals rather than wherever an
+invented map put them.
 Against the vendor's own Orchestra `GradwarpCorrector` on that volume, this
 package agrees to **correlation 0.999876, nRMSE 1.3%** — the difference is a
 sub-voxel rim at the phantom's sharpest edge
@@ -115,6 +119,7 @@ Each runs on its own and writes the figure it describes:
 | [`gradient_nonlinearity.py`](examples/gradient_nonlinearity.py) | A lattice bent by a third-order coil, and the displacement in millimetres |
 | [`spiral_deblurring.py`](examples/spiral_deblurring.py) | Blur simulated exactly from a quantised field, then removed |
 | [`field_map_from_phase.py`](examples/field_map_from_phase.py) | Two localised lobes recovered from coil phase alone |
+| [`_brainweb.py`](examples/_brainweb.py) | The BrainWeb slice and the field its tissue makes, shared by the above |
 | [`susceptibility.py`](examples/susceptibility.py) | A reversed-polarity pair brought back into register |
 | [`make_showcase.py`](examples/make_showcase.py) | The figures above, from acquired data when `GRADWARP_DATA` and `EPI_DATA` point at it, simulated otherwise |
 

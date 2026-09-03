@@ -1,6 +1,6 @@
 """Build the figures the README shows.
 
-Two of the four columns use acquired data that is not in this repository:
+Two of the three columns use acquired data that is not in this repository:
 
 * gradient nonlinearity — a GE body gradient coil's own coefficient table, and
   the same volume corrected by the vendor's Orchestra ``GradwarpCorrector``, so
@@ -20,7 +20,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-import field_map_from_phase as phase_example
+from _brainweb import brain_and_field
 import gradient_nonlinearity as gradient_example
 import mrdistortion as mrd
 import spiral_deblurring as spiral_example
@@ -92,7 +92,7 @@ def gradient_column():
                 "acquired",
                 f"displacement, 0-{displacement.max():.0f} mm",
             ),
-            (image[:, :, middle], displacement[:, :, middle]),
+            (np.rot90(image[:, :, middle]), np.rot90(displacement[:, :, middle])),
             None,
         )
     size = 96
@@ -105,52 +105,41 @@ def gradient_column():
     middle = size // 2
     return (
         ("gradient nonlinearity (simulated)", "acquired", "corrected"),
-        (warp(lattice)[:, :, middle], lattice[:, :, middle]),
+        (np.rot90(warp(lattice)[:, :, middle]), np.rot90(lattice[:, :, middle])),
         dict(cmap="gray"),
     )
 
 
 def spiral_column():
-    size = 256
-    readout = 12e-3
+    """A BrainWeb slice blurred by the field its own tissue makes."""
+    size, readout = 256, 12e-3
+    truth, field, _ = brain_and_field(slice_index=60, size=size)
+    rows, columns = np.mgrid[0:size, 0:size] / (size / 2) - 1
+    truth = truth * np.exp(1j * 0.7 * (columns + 0.5 * rows))
     timing = mrd.ReadoutTiming.from_trajectory(
         spiral_example.variable_density_arm(), duration=readout
     )
-    transfer = mrd.fit_transfer(timing, band=250.0, terms=16)
+    transfer = mrd.fit_transfer(timing, band=260.0, terms=24)
     axis = np.fft.fftfreq(size) * 2
     squared = axis[:, None] ** 2 + axis[None, :] ** 2
     disc = squared <= 1.0
     times = np.interp(np.clip(squared, 0, 1), timing.squared_radius, timing.times)
-    truth = spiral_example.phantom(size)
-    rows, columns = np.mgrid[0:size, 0:size] / (size / 2) - 1
-    smooth = 200 * (0.7 * columns + 0.3 * rows)
-    levels = np.linspace(smooth.min(), smooth.max(), 32)
-    field = levels[np.abs(smooth[..., None] - levels).argmin(-1)]
+    levels = np.linspace(field.min(), field.max(), 200)
+    quantised = levels[np.abs(field[..., None] - levels).argmin(-1)]
     blurred = np.zeros(truth.shape, complex)
-    for value in np.unique(field):
+    for value in np.unique(quantised):
         blurred += np.fft.ifft2(
-            np.fft.fft2(truth * (field == value)) * disc
+            np.fft.fft2(truth * (quantised == value)) * disc
             * np.exp(2j * np.pi * value * readout * times)
         )
     corrected = mrd.deblur(
-        torch.from_numpy(blurred), torch.from_numpy(field), transfer
+        torch.from_numpy(blurred), torch.from_numpy(quantised), transfer
     ).numpy()
     top = np.percentile(np.abs(blurred), 99.5)
     return (
         ("spiral off-resonance", "off resonance", "deblurred"),
         (np.abs(blurred), np.abs(corrected)),
         dict(cmap="gray", vmin=0, vmax=top),
-    )
-
-
-def phase_column():
-    coils, truth, _ = phase_example.acquisition(64)
-    estimate = mrd.field_map_from_phase(coils, echo_time=0.7e-3, smoothing=1.5)
-    middle = 32
-    return (
-        ("field map from phase", "true field", "estimated"),
-        (truth[:, :, middle].numpy(), estimate[:, :, middle].numpy()),
-        dict(cmap="RdBu_r", vmin=-200, vmax=200),
     )
 
 
@@ -163,7 +152,8 @@ def epi_column():
         scale = lambda x: x / np.percentile(x, 99.5)
         return (
             ("susceptibility", "blip up", "corrected"),
-            (scale(acquired[:, :, middle]), scale(corrected[:, :, middle])),
+            (np.rot90(scale(acquired[:, :, middle])),
+             np.rot90(scale(corrected[:, :, middle]))),
             dict(cmap="gray", vmin=0, vmax=1.0),
         )
     up, down, _ = epi_example.displaced_pair()
@@ -180,20 +170,20 @@ def epi_column():
 
 
 def showcase() -> None:
-    columns = [gradient_column(), spiral_column(), phase_column(), epi_column()]
+    columns = [gradient_column(), spiral_column(), epi_column()]
     figure, axes = plt.subplots(2, len(columns), figsize=(2.6 * len(columns), 5.6))
     for index, ((heading, upper, lower), images, style) in enumerate(columns):
         for row, (image, label) in enumerate(zip(images, (upper, lower), strict=True)):
             axis = axes[row, index]
             if style is None:
                 axis.imshow(
-                    np.rot90(image),
+                    image,
                     cmap="gray" if row == 0 else "magma",
                     vmax=np.percentile(image, 99.5),
                     vmin=0,
                 )
             else:
-                axis.imshow(np.rot90(image), **style)
+                axis.imshow(image, **style)
             axis.set_xticks([])
             axis.set_yticks([])
             axis.set_ylabel(label, fontsize=8)
