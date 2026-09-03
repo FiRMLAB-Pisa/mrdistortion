@@ -52,6 +52,28 @@ are.
   back without a NIfTI touching disk. A 104x104x72 pair corrects in about 10 s
   on one GPU, bringing the two acquisitions into agreement a thousandfold
 
+## Runtimes
+
+Measured on one RTX 4060 Laptop GPU, on the data described above.
+
+| | | |
+|---|---|---|
+| susceptibility, 104x104x72 (2 mm) | 20 iterations | 9.9 s CPU, **2.2 s GPU** |
+| susceptibility, 160x160x112 | 20 iterations | 8.1 s GPU, 0.87 GiB |
+| field map from phase, 8 coils at 256^3 | | **0.22 s**, 4.0 GiB |
+| spiral deblur, 256^3, 8 terms | | **0.17 s**, 1.7 GiB |
+| spiral deblur, 256^3, 16 terms | | 0.38 s, 1.7 GiB |
+| `fit_transfer`, 16 terms | once, offline, reusable | 3.1 s CPU |
+
+The factorisation is fitted once per trajectory and cached with it, so a
+reconstruction pays only the apply. Deblurring peak memory is one accumulator
+plus one working volume and does not grow with the term count; the field-map
+estimate holds every coil at once, which is what its 4 GiB is.
+
+Susceptibility correction is 3D only: PyHySCO 0.0.4's own two-dimensional
+regulariser builds a three-dimensional transform, so a single slice raises
+`NotImplementedError` rather than failing deep inside. Pass the volume.
+
 ## Quick Start
 
 ```bash

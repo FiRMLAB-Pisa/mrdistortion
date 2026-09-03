@@ -64,6 +64,7 @@ def _require_pyhysco() -> dict[str, Any]:
             EPIMRIDistortionCorrection,
         )
         from EPI_MRI.ImageModels import Interp1D
+        from EPI_MRI.LinearOperators import myLaplacian2D, myLaplacian3D
         from EPI_MRI.utils import m_plus, normalize
         from optimization.ADMM import ADMM
         from optimization.GaussNewton import GaussNewton
@@ -77,6 +78,7 @@ def _require_pyhysco() -> dict[str, Any]:
         "DataObject": DataObject,
         "correction": EPIMRIDistortionCorrection,
         "Interp1D": Interp1D,
+        "laplacian": {2: myLaplacian2D, 3: myLaplacian3D},
         "m_plus": m_plus,
         "normalize": normalize,
         "optimizers": {"gauss-newton": GaussNewton, "lbfgs": LBFGS, "admm": ADMM},
@@ -221,8 +223,22 @@ def correct_susceptibility(
         dtype=torch.float64,
         device=resolved,
     )
-    objective = parts["correction"](holder, alpha, beta)
-    initial = objective.initialize()
+    # Both the smoothness term and the initialiser's own smoothing are written
+    # per dimension, and the defaults are the three-dimensional ones.
+    try:
+        objective = parts["correction"](
+            holder, alpha, beta, regularizer=parts["laplacian"][blip_up.ndim]
+        )
+        initial = objective.initialize(blur_result=blip_up.ndim == 3)
+    except IndexError as error:
+        if blip_up.ndim == 2:
+            raise NotImplementedError(
+                "this PyHySCO cannot correct a two-dimensional pair: its own "
+                "two-dimensional regulariser builds a three-dimensional "
+                "transform and indexes an axis that is not there. Pass the "
+                "volume the slice came from instead."
+            ) from error
+        raise
 
     try:
         driver = parts["optimizers"][optimizer]

@@ -97,3 +97,16 @@ def test_unknown_optimizer_is_rejected() -> None:
         correct_susceptibility(
             up, down, voxel_size=(1.0, 1.0, 1.0), optimizer="newton-raphson"
         )
+
+
+@needs_pyhysco
+def test_two_dimensional_pair_reports_the_upstream_limit() -> None:
+    """PyHySCO 0.0.4's own 2D regulariser builds a 3D transform and fails."""
+    up, down, _ = displaced_pair(shape=(24, 32, 32))
+    with pytest.raises(NotImplementedError, match="two-dimensional"):
+        correct_susceptibility(
+            up[:, :, 16].contiguous(),
+            down[:, :, 16].contiguous(),
+            voxel_size=(1.0, 1.0),
+            max_iter=6,
+        )

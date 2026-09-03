@@ -16,7 +16,7 @@ import torch
 
 import mrdistortion as mrd
 
-SIZE = 192
+SIZE = 256
 READOUT_S = 12e-3
 
 
@@ -29,21 +29,33 @@ def variable_density_arm(samples: int = 1500) -> np.ndarray:
 
 
 def phantom(size: int) -> np.ndarray:
-    """Ellipses with a smooth object phase, as an acquisition would have."""
+    """A BrainWeb T1 slice, with the smooth object phase an acquisition has.
+
+    Off-resonance blur is a smearing of structure, so what it does is only
+    visible on something that has structure. Falls back to ellipses when
+    ``brainweb-dl`` is not installed, which understates the artefact.
+    """
     rows, columns = np.mgrid[0:size, 0:size] / (size / 2) - 1
-    image = np.zeros((size, size))
-    for row, column, height, width, value in (
-        (0.0, 0.0, 0.75, 0.60, 1.0),
-        (-0.15, 0.0, 0.25, 0.35, 0.55),
-        (0.32, -0.28, 0.13, 0.09, 0.8),
-        (0.32, 0.28, 0.13, 0.09, 0.8),
-        (-0.45, 0.0, 0.10, 0.10, 0.35),
-    ):
-        inside = ((rows - row) / height) ** 2 + ((columns - column) / width) ** 2
-        image[inside <= 1] += value
-    # Fine structure, so the blur has something to smear.
-    body = image > 0
-    image[body] += 0.25 * (np.sin(22 * rows) * np.cos(19 * columns))[body]
+    try:
+        from brainweb_dl import get_mri
+    except ImportError:
+        print("brainweb-dl not installed; falling back to ellipses")
+        image = np.zeros((size, size))
+        for row, column, height, width, value in (
+            (0.0, 0.0, 0.75, 0.60, 1.0),
+            (-0.15, 0.0, 0.25, 0.35, 0.55),
+            (0.32, -0.28, 0.13, 0.09, 0.8),
+            (0.32, 0.28, 0.13, 0.09, 0.8),
+        ):
+            inside = ((rows - row) / height) ** 2 + ((columns - column) / width) ** 2
+            image[inside <= 1] += value
+    else:
+        volume = get_mri(sub_id=4, contrast="T1")
+        image = np.asarray(volume[90], dtype=float)
+        image = image / image.max()
+        if image.shape[0] != size:
+            index = np.linspace(0, image.shape[0] - 1, size).round().astype(int)
+            image = image[np.ix_(index, index)]
     return image * np.exp(1j * 0.7 * (columns + 0.5 * rows))
 
 

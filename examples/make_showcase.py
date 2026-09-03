@@ -111,7 +111,7 @@ def gradient_column():
 
 
 def spiral_column():
-    size = 160
+    size = 256
     readout = 12e-3
     timing = mrd.ReadoutTiming.from_trajectory(
         spiral_example.variable_density_arm(), duration=readout
