@@ -47,7 +47,9 @@ are.
   the input one unwarps and reslices together, so the image is interpolated once
 - **Spiral deblurring at a fixed cost** — the transfer factorises into a few
   separable terms, so correcting costs a handful of transforms however finely
-  the field is resolved, and peak memory does not grow with the term count
+  the field is resolved, and peak memory does not grow with the term count.
+  The factorisation reports both its `error` and its `amplification`, because
+  a long readout fails through the second while the first still looks fine
 - **Field maps without a second acquisition** — off-resonance is read from the
   phase of the images already acquired, with the sensitivities estimated from
   those same images
@@ -70,7 +72,17 @@ Measured on one RTX 4060 Laptop GPU, on the data described above.
 | `fit_transfer`, 16 terms | once, offline, reusable | 3.1 s CPU |
 
 The factorisation is fitted once per trajectory and cached with it, so a
-reconstruction pays only the apply. Deblurring peak memory is one accumulator
+reconstruction pays only the apply. Its cost is linear in the term count: the
+0.17 s above is 8 terms, and the 20 ms readout in the example needs 56.
+
+There is a ceiling on readout duration, and it is worth knowing where. For a
+variable-density arm over a +-260 Hz band the correction is clean to about
+20 ms; at 25 ms it is worse than the blur, and at 30 ms it diverges. Adding
+terms does not rescue it and the basis is not badly conditioned
+(`cond` stays around 10^4). What grows is the weights: `amplification` climbs
+from 62 at 12 ms to over 1000 at 30 ms, so the terms are large and nearly
+cancelling and whatever fails to cancel is amplified. Check `amplification`,
+not only `error` -- at 20 ms the error is 0.0012 either way. Deblurring peak memory is one accumulator
 plus one working volume and does not grow with the term count; the field-map
 estimate holds every coil at once, which is what its 4 GiB is.
 

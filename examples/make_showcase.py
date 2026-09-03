@@ -112,14 +112,14 @@ def gradient_column():
 
 def spiral_column():
     """A BrainWeb slice blurred by the field its own tissue makes."""
-    size, readout = 256, 12e-3
+    size, readout = 256, 20e-3
     truth, field, _ = brain_and_field(slice_index=60, size=size)
     rows, columns = np.mgrid[0:size, 0:size] / (size / 2) - 1
     truth = truth * np.exp(1j * 0.7 * (columns + 0.5 * rows))
     timing = mrd.ReadoutTiming.from_trajectory(
         spiral_example.variable_density_arm(), duration=readout
     )
-    transfer = mrd.fit_transfer(timing, band=260.0, terms=24)
+    transfer = mrd.fit_transfer(timing, band=260.0, terms=56)
     axis = np.fft.fftfreq(size) * 2
     squared = axis[:, None] ** 2 + axis[None, :] ** 2
     disc = squared <= 1.0

@@ -17,9 +17,9 @@ import torch
 import mrdistortion as mrd
 
 SIZE = 256
-READOUT_S = 12e-3
+READOUT_S = 20e-3
 BAND_HZ = 260.0
-TERMS = 24
+TERMS = 56
 
 
 def variable_density_arm(samples: int = 1500) -> np.ndarray:
@@ -47,8 +47,8 @@ def main() -> None:
         variable_density_arm(), duration=READOUT_S
     )
     transfer = mrd.fit_transfer(timing, band=BAND_HZ, terms=TERMS)
-    print(f"{transfer.terms} separable terms, "
-          f"transfer error {transfer.error(timing):.4f}")
+    print(f"{transfer.terms} separable terms, error {transfer.error(timing):.4f}, "
+          f"amplification {transfer.amplification:.0f}")
 
     axis = np.fft.fftfreq(SIZE) * 2
     squared = axis[:, None] ** 2 + axis[None, :] ** 2

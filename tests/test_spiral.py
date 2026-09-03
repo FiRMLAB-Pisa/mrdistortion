@@ -171,3 +171,12 @@ def test_peak_memory_does_not_grow_with_terms(timing: ReadoutTiming) -> None:
         torch.cuda.synchronize()
         peaks.append(torch.cuda.max_memory_allocated())
     assert peaks[1] <= 1.05 * peaks[0]
+
+
+def test_amplification_climbs_with_the_accrued_phase(timing: ReadoutTiming) -> None:
+    """Cancelling weights, not a poor fit, are what break a long readout."""
+    short = ReadoutTiming.from_trajectory(variable_density_arm(), duration=8e-3)
+    long = ReadoutTiming.from_trajectory(variable_density_arm(), duration=30e-3)
+    lightly = fit_transfer(short, band=260.0, terms=40)
+    heavily = fit_transfer(long, band=260.0, terms=40)
+    assert heavily.amplification > 3 * lightly.amplification

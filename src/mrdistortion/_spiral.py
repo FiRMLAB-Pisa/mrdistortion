@@ -151,6 +151,25 @@ class SpiralTransfer:
         """Number of separable terms."""
         return len(self.rates)
 
+    @property
+    def amplification(self) -> float:
+        """How far the terms cancel against each other.
+
+        The transfer has unit modulus, so weights summing to much more than
+        one mean the terms are large and nearly cancelling, and whatever they
+        fail to cancel is amplified by about this factor. It climbs with the
+        accrued phase: for a variable-density arm it is around 60 at a 12 ms
+        readout and over 1000 at 30 ms, where the correction is worse than the
+        blur it was meant to remove. Read it alongside :meth:`error`, which
+        stays small in cases where the correction has already stopped working.
+
+        Returns
+        -------
+        float
+            The largest summed weight magnitude over the tabulated frequencies.
+        """
+        return float(np.abs(self.weights).sum(axis=0).max())
+
     def error(self, timing: ReadoutTiming) -> float:
         """Worst density-weighted RMS error of the factorization.
 
