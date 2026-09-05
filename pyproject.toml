@@ -25,11 +25,11 @@ classifiers = [
 # Reading coefficients and evaluating the harmonics is NumPy. Resampling the
 # image they warp is SimpleITK's B-spline filter, which is not optional --
 # unwarping without resampling is only half of it.
-dependencies = ["numpy>=1.24", "SimpleITK>=2.3"]
+dependencies = ["numpy>=1.24", "torch>=2.4", "SimpleITK>=2.3"]
 
 [project.optional-dependencies]
-# PyHySCO is GPL-3.0-only. It is called as a program, never imported, so
-# installing it is the user's decision and its licence stays its own.
+# PyHySCO is GPL-3.0-only, so installing it is the user's decision and its
+# licence stays its own.
 epi = ["PyHySCO"]
 all = ["mrdistortion[epi]"]
 dev = [

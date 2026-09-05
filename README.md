@@ -70,7 +70,7 @@ unwarped = correct(volume)
 # straight off an MRD stream: the encoding the acquisition names supplies the
 # matrix and field of view, the acquisition its orientation, and the header its
 # coefficients if it carries any
-correct = mrd.Gradunwarp.from_mrd(header, acquisition)      # coefficients= if not
+correct = mrd.Gradunwarp.from_mrd(header, acquisition)  # coefficients= if not
 correct = mrd.Gradunwarp.from_affine(table, affine, shape)  # or from an affine
 
 # what it moves, before it moves anything, and correcting onto another grid
