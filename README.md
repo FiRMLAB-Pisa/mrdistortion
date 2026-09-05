@@ -9,21 +9,9 @@ pair, spiral off-resonance blur, and the field map that drives it.
 [![PyPI](https://img.shields.io/pypi/v/mrdistortion.svg)](https://pypi.org/project/mrdistortion/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Four corrections, and they are not the same kind of problem. A gradient's field
-departs from linearity away from isocentre, and that departure is a property of
-the coil: stated once by its manufacturer, and corrected deterministically. It
-grows with field of view — a head-sized acquisition sees almost none of it, a
-whole-spine one is unusable without it.
-
-The other three are properties of the subject. Susceptibility displaces an EPI
-along its phase-encoding axis, and what measures it is a second acquisition with
-that axis reversed. Off-resonance blurs a spiral, because a spiral reads k-space
-over milliseconds and the phase accrues the whole time. Both need to know the
-field, which a single-echo acquisition already carries in its phase.
-
 ![what each correction does](examples/figures/showcase.png)
 
-The gradient and susceptibility columns are acquired data: a GE body gradient
+*The gradient and susceptibility columns are acquired data: a GE body gradient
 coil's own coefficient table applied to a phantom it was measured on, and a
 spin-echo EPI pair from [OpenNeuro ds003653](https://openneuro.org/datasets/ds003653).
 The spiral column blurs a BrainWeb slice with the field its own tissue would
@@ -35,7 +23,16 @@ package agrees to **correlation 0.999876, nRMSE 1.3%** — the difference is a
 sub-voxel rim at the phantom's sharpest edge
 ([figure](examples/figures/gradwarp_vs_orchestra.png)). Neither the coefficient
 table nor the vendor code is redistributable, so neither is here; the images
-are.
+are.*
+
+A gradient's field departs from linearity away from isocentre, and that
+departure is a property of the coil: stated once by its manufacturer, and
+corrected deterministically. The other three are properties of the subject.
+Susceptibility displaces an EPI along its phase-encoding axis, and what measures
+it is a second acquisition with that axis reversed. Off-resonance blurs a
+spiral, because a spiral reads k-space over milliseconds and the phase accrues
+the whole time. Both need to know the field, which a single-echo acquisition
+already carries in its phase.
 
 - **Vendor-neutral coefficients** — GE `.dat`, Siemens `.grad` and a plain
   `Alpha/Beta` table parse into one representation, with the documented
@@ -47,48 +44,13 @@ are.
   the input one unwarps and reslices together, so the image is interpolated once
 - **Spiral deblurring at a fixed cost** — the transfer factorises into a few
   separable terms, so correcting costs a handful of transforms however finely
-  the field is resolved, and peak memory does not grow with the term count.
-  The factorisation reports both its `error` and its `amplification`, because
-  a long readout fails through the second while the first still looks fine
+  the field is resolved, and peak memory does not grow with the term count
 - **Field maps without a second acquisition** — off-resonance is read from the
   phase of the images already acquired, with the sensitivities estimated from
   those same images
 - **Tensors throughout, including PyHySCO** — it is GPL-3.0-only and so an
   optional extra, but it is torch-based, so the pair goes in and the field comes
-  back without a NIfTI touching disk. A 104x104x72 pair corrects in about 10 s
-  on one GPU, bringing the two acquisitions into agreement a thousandfold
-
-## Runtimes
-
-Measured on one RTX 4060 Laptop GPU, on the data described above.
-
-| | | |
-|---|---|---|
-| susceptibility, 104x104x72 (2 mm) | 20 iterations | 9.9 s CPU, **2.2 s GPU** |
-| susceptibility, 160x160x112 | 20 iterations | 8.1 s GPU, 0.87 GiB |
-| field map from phase, 8 coils at 256^3 | | **0.22 s**, 4.0 GiB |
-| spiral deblur, 256^3, 8 terms | | **0.17 s**, 1.7 GiB |
-| spiral deblur, 256^3, 16 terms | | 0.38 s, 1.7 GiB |
-| `fit_transfer`, 16 terms | once, offline, reusable | 3.1 s CPU |
-
-The factorisation is fitted once per trajectory and cached with it, so a
-reconstruction pays only the apply. Its cost is linear in the term count: the
-0.17 s above is 8 terms, and the 20 ms readout in the example needs 56.
-
-There is a ceiling on readout duration, and it is worth knowing where. For a
-variable-density arm over a +-260 Hz band the correction is clean to about
-20 ms; at 25 ms it is worse than the blur, and at 30 ms it diverges. Adding
-terms does not rescue it and the basis is not badly conditioned
-(`cond` stays around 10^4). What grows is the weights: `amplification` climbs
-from 62 at 12 ms to over 1000 at 30 ms, so the terms are large and nearly
-cancelling and whatever fails to cancel is amplified. Check `amplification`,
-not only `error` -- at 20 ms the error is 0.0012 either way. Deblurring peak memory is one accumulator
-plus one working volume and does not grow with the term count; the field-map
-estimate holds every coil at once, which is what its 4 GiB is.
-
-Susceptibility correction is 3D only: PyHySCO 0.0.4's own two-dimensional
-regulariser builds a three-dimensional transform, so a single slice raises
-`NotImplementedError` rather than failing deep inside. Pass the volume.
+  back without a NIfTI touching disk
 
 ## Quick Start
 
@@ -124,16 +86,47 @@ result.field_map, result.blip_up, result.blip_down
 
 ## Examples
 
-Each runs on its own and writes the figure it describes:
+The `.py` beside each notebook is the source — it runs as a script and lints
+with the rest of the package, and `scripts/build_examples.sh` is what turns it
+into the notebook.
 
-| | |
-|---|---|
-| [`gradient_nonlinearity.py`](examples/gradient_nonlinearity.py) | A lattice bent by a third-order coil, and the displacement in millimetres |
-| [`spiral_deblurring.py`](examples/spiral_deblurring.py) | Blur simulated exactly from a quantised field, then removed |
-| [`field_map_from_phase.py`](examples/field_map_from_phase.py) | Two localised lobes recovered from coil phase alone |
-| [`_brainweb.py`](examples/_brainweb.py) | The BrainWeb slice and the field its tissue makes, shared by the above |
-| [`susceptibility.py`](examples/susceptibility.py) | A reversed-polarity pair brought back into register |
-| [`make_showcase.py`](examples/make_showcase.py) | The figures above, from acquired data when `GRADWARP_DATA` and `EPI_DATA` point at it, simulated otherwise |
+| | | |
+|---|---|---|
+| [`01-gradient_nonlinearity`](examples/01-gradient_nonlinearity.ipynb) | a lattice bent by a third-order coil, and the displacement in millimetres | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/FiRMLAB-Pisa/mrdistortion/blob/main/examples/01-gradient_nonlinearity.ipynb) |
+| [`02-field_map_from_phase`](examples/02-field_map_from_phase.ipynb) | two localised lobes recovered from coil phase alone | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/FiRMLAB-Pisa/mrdistortion/blob/main/examples/02-field_map_from_phase.ipynb) |
+| [`03-spiral_deblurring`](examples/03-spiral_deblurring.ipynb) | blur simulated exactly from a quantised field, then removed | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/FiRMLAB-Pisa/mrdistortion/blob/main/examples/03-spiral_deblurring.ipynb) |
+| [`04-susceptibility`](examples/04-susceptibility.ipynb) | a reversed-polarity pair brought back into register | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/FiRMLAB-Pisa/mrdistortion/blob/main/examples/04-susceptibility.ipynb) |
+
+## What it costs
+
+Measured on one RTX 4060 Laptop GPU, on the data described above.
+
+| | | |
+|---|---|---|
+| susceptibility, 104×104×72 (2 mm) | 20 iterations | 9.9 s CPU, **2.2 s GPU** |
+| susceptibility, 160×160×112 | 20 iterations | 8.1 s GPU, 0.87 GiB |
+| field map from phase, 8 coils at 256³ | | **0.22 s**, 4.0 GiB |
+| spiral deblur, 256³ | 8 terms | **0.17 s**, 1.7 GiB |
+| spiral deblur, 256³ | 16 terms | 0.38 s, 1.7 GiB |
+| `fit_transfer`, 16 terms | once, offline, reusable | 3.1 s CPU |
+
+The factorisation is fitted once per trajectory and cached with it, so a
+reconstruction pays only the apply, at a cost linear in the term count.
+Deblurring's peak memory is one accumulator plus one working volume and does not
+grow with that count; the field-map estimate holds every coil at once, which is
+what its 4 GiB is.
+
+There is a ceiling on readout duration. For a variable-density arm over a
+±260 Hz band the correction is clean to about 20 ms, is worse than the blur at
+25 ms, and diverges at 30 ms — and what fails is not the conditioning but the
+weights: `amplification` climbs from 62 at 12 ms to over 1000 at 30 ms, so the
+terms are large and nearly cancelling. Check it rather than `error`, which at
+20 ms reads 0.0012 either way. [`03-spiral_deblurring`](examples/03-spiral_deblurring.ipynb)
+sweeps it.
+
+Susceptibility correction is 3D only: PyHySCO 0.0.4's own two-dimensional
+regulariser builds a three-dimensional transform, so a single slice raises
+`NotImplementedError` rather than failing deep inside. Pass the volume.
 
 ## Related Works
 
@@ -168,6 +161,7 @@ Each runs on its own and writes the figure it describes:
 pip install -e .[dev]
 bash scripts/format_and_lint.sh
 pytest -q
+bash scripts/build_examples.sh    # rebuild the notebooks and their figures
 ```
 
 The docstring examples run as part of the suite — they are the documentation,

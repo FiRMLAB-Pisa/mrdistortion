@@ -39,17 +39,13 @@ def _field_from_susceptibility(chi: np.ndarray) -> np.ndarray:
     """Off-resonance in Hz from a susceptibility distribution, at 3 T."""
     margin = [size // 4 for size in chi.shape]
     padded = np.pad(chi, [(m, m) for m in margin], mode="edge")
-    axes = np.meshgrid(
-        *[np.fft.fftfreq(size) for size in padded.shape], indexing="ij"
-    )
+    axes = np.meshgrid(*[np.fft.fftfreq(size) for size in padded.shape], indexing="ij")
     squared = sum(axis**2 for axis in axes)
     squared[0, 0, 0] = 1.0
     kernel = 1.0 / 3.0 - axes[0] ** 2 / squared
     kernel[0, 0, 0] = 0.0
     field = np.real(np.fft.ifftn(np.fft.fftn(padded) * kernel))
-    inner = tuple(
-        slice(m, m + size) for m, size in zip(margin, chi.shape, strict=True)
-    )
+    inner = tuple(slice(m, m + size) for m, size in zip(margin, chi.shape, strict=True))
     return HZ_PER_PPM_AT_3T * field[inner]
 
 
@@ -70,9 +66,8 @@ def brain_and_field(slice_index: int = 60, size: int = 256):
         The T1 slice normalised to a peak of one, off-resonance in Hz, and the
         head. All shaped ``(size, size)`` with anterior at the top.
     """
-    from scipy.ndimage import gaussian_filter
-
     from brainweb_dl import Segmentation, get_mri
+    from scipy.ndimage import gaussian_filter
 
     labels = np.rint(
         np.asarray(get_mri(sub_id=4, contrast=Segmentation.CRISP, shape=SHAPE))

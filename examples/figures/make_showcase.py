@@ -1,5 +1,7 @@
 """Build the figures the README shows.
 
+Run it as ``python examples/figures/make_showcase.py``.
+
 Two of the three columns use acquired data that is not in this repository:
 
 * gradient nonlinearity — a GE body gradient coil's own coefficient table, and
@@ -14,17 +16,81 @@ script falls back to simulating both, and says so.
 """
 
 import os
+import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from _brainweb import brain_and_field
-import gradient_nonlinearity as gradient_example
+
 import mrdistortion as mrd
-import spiral_deblurring as spiral_example
-import susceptibility as epi_example
+
+ORDER = 3
+SHAPE = (48, 64, 64)
+
+
+def generic_coil(third_order: float = -0.06) -> mrd.GradientCoefficients:
+    """A generic coil, given by how far it departs from being linear.
+
+    The coefficients describe the departure, not the whole field: an all-zero
+    table is a perfectly linear gradient and corrects to the identity. Each
+    axis is stated in its own rotated frame, which is why every axis carries
+    the same ``(n, m)``.
+    """
+    alpha = np.zeros((3, ORDER + 1, ORDER + 1))
+    beta = np.zeros_like(alpha)
+    for axis in range(3):
+        alpha[axis, 3, 0] = third_order
+    return mrd.GradientCoefficients(
+        basis="normalized", alpha=alpha, beta=beta, reference_radius_mm=250.0
+    )
+
+
+def grid_phantom(shape: tuple[int, int, int], spacing: int = 12) -> np.ndarray:
+    """A lattice, so the geometry of the correction is visible."""
+    volume = np.zeros(shape)
+    for axis in range(3):
+        index = np.arange(shape[axis])
+        on = (index % spacing) < 2
+        volume += np.moveaxis(np.broadcast_to(on.reshape(-1, 1, 1), shape), 0, axis)
+    return np.clip(volume, 0, 1)
+
+
+def variable_density_arm(samples: int = 1500) -> np.ndarray:
+    """One centre-out arm whose radius grows as a fractional power of time."""
+    time = np.linspace(0.0, 1.0, samples)
+    radius = time**0.6
+    angle = 40 * np.pi * time
+    return np.stack([radius * np.cos(angle), radius * np.sin(angle)], axis=1)
+
+
+def displaced_pair(shape=SHAPE, amplitude: float = 4.0):
+    """A phantom and the pair a field would displace it into."""
+    axes = [torch.linspace(-1, 1, n, dtype=torch.float64) for n in shape]
+    rows, columns, planes = torch.meshgrid(*axes, indexing="ij")
+    phantom = (
+        ((rows / 0.75) ** 2 + (columns / 0.8) ** 2 + (planes / 0.8) ** 2) < 1
+    ).double() * (1 + 0.4 * torch.sin(6 * rows) * torch.cos(5 * columns))
+
+    # An air cavity's field: compact, and strongest where the anatomy ends.
+    shift = amplitude * torch.exp(-((columns - 0.35) ** 2 + planes**2) / 0.15)
+    index = torch.arange(shape[0], dtype=torch.float64)[:, None, None]
+
+    def warp(image, offset):
+        source = (index + offset).clamp(0, shape[0] - 1)
+        lower = source.floor().long()
+        upper = (lower + 1).clamp(max=shape[0] - 1)
+        fraction = source - lower
+        return (
+            image.gather(0, lower.expand_as(image)) * (1 - fraction)
+            + image.gather(0, upper.expand_as(image)) * fraction
+        )
+
+    return warp(phantom, shift), warp(phantom, -shift), shift
+
 
 GRADWARP_DATA = Path(os.environ.get("GRADWARP_DATA", "/nonexistent"))
 EPI_DATA = Path(os.environ.get("EPI_DATA", "/nonexistent"))
@@ -60,7 +126,9 @@ def gradwarp_case():
     geometry = geometry_from_corners(
         archive["first_corners"], image.shape, archive["last_corners"]
     )
-    correct = mrd.Gradunwarp.from_file(GRADWARP_DATA / f"{CASE}_coefficients.dat", geometry)
+    correct = mrd.Gradunwarp.from_file(
+        GRADWARP_DATA / f"{CASE}_coefficients.dat", geometry
+    )
     return image, reference, correct(image)
 
 
@@ -84,8 +152,10 @@ def gradient_column():
         spacing = np.array(geometry.fov_mm) / np.array(image.shape)
         displacement = np.linalg.norm((grid - index) * spacing, axis=-1)
         middle = image.shape[2] // 2
-        print(f"real coil: displacement median {np.median(displacement):.2f} mm, "
-              f"max {displacement.max():.2f} mm")
+        print(
+            f"real coil: displacement median {np.median(displacement):.2f} mm, "
+            f"max {displacement.max():.2f} mm"
+        )
         return (
             (
                 "gradient nonlinearity",
@@ -97,16 +167,18 @@ def gradient_column():
         )
     size = 96
     geometry = mrd.ImageGeometry(
-        shape=(size,) * 3, fov_mm=(400.0,) * 3, direction=np.eye(3),
+        shape=(size,) * 3,
+        fov_mm=(400.0,) * 3,
+        direction=np.eye(3),
         center_mm=(0.0, 0.0, 0.0),
     )
-    warp = mrd.Gradunwarp(gradient_example.generic_coil(-0.16), geometry)
-    lattice = gradient_example.grid_phantom((size,) * 3, spacing=10)
+    warp = mrd.Gradunwarp(generic_coil(-0.16), geometry)
+    lattice = grid_phantom((size,) * 3, spacing=10)
     middle = size // 2
     return (
         ("gradient nonlinearity (simulated)", "acquired", "corrected"),
         (np.rot90(warp(lattice)[:, :, middle]), np.rot90(lattice[:, :, middle])),
-        dict(cmap="gray"),
+        {"cmap": "gray"},
     )
 
 
@@ -116,9 +188,7 @@ def spiral_column():
     truth, field, _ = brain_and_field(slice_index=60, size=size)
     rows, columns = np.mgrid[0:size, 0:size] / (size / 2) - 1
     truth = truth * np.exp(1j * 0.7 * (columns + 0.5 * rows))
-    timing = mrd.ReadoutTiming.from_trajectory(
-        spiral_example.variable_density_arm(), duration=readout
-    )
+    timing = mrd.ReadoutTiming.from_trajectory(variable_density_arm(), duration=readout)
     transfer = mrd.fit_transfer(timing, band=260.0, terms=56)
     axis = np.fft.fftfreq(size) * 2
     squared = axis[:, None] ** 2 + axis[None, :] ** 2
@@ -129,7 +199,8 @@ def spiral_column():
     blurred = np.zeros(truth.shape, complex)
     for value in np.unique(quantised):
         blurred += np.fft.ifft2(
-            np.fft.fft2(truth * (quantised == value)) * disc
+            np.fft.fft2(truth * (quantised == value))
+            * disc
             * np.exp(2j * np.pi * value * readout * times)
         )
     corrected = mrd.deblur(
@@ -139,7 +210,7 @@ def spiral_column():
     return (
         ("spiral off-resonance", "off resonance", "deblurred"),
         (np.abs(blurred), np.abs(corrected)),
-        dict(cmap="gray", vmin=0, vmax=top),
+        {"cmap": "gray", "vmin": 0, "vmax": top},
     )
 
 
@@ -148,15 +219,16 @@ def epi_column():
         archive = np.load(EPI_DATA / "corrected.npz")
         acquired, corrected = archive["ap"], archive["up"]
         middle = acquired.shape[2] // 2
-        top = np.percentile(acquired[:, :, middle], 99.5)
         scale = lambda x: x / np.percentile(x, 99.5)
         return (
             ("susceptibility", "blip up", "corrected"),
-            (np.rot90(scale(acquired[:, :, middle])),
-             np.rot90(scale(corrected[:, :, middle]))),
-            dict(cmap="gray", vmin=0, vmax=1.0),
+            (
+                np.rot90(scale(acquired[:, :, middle])),
+                np.rot90(scale(corrected[:, :, middle])),
+            ),
+            {"cmap": "gray", "vmin": 0, "vmax": 1.0},
         )
-    up, down, _ = epi_example.displaced_pair()
+    up, down, _ = displaced_pair()
     result = mrd.correct_susceptibility(
         up, down, voxel_size=(1.0, 1.0, 1.0), alpha=50.0, max_iter=30
     )
@@ -165,7 +237,7 @@ def epi_column():
     return (
         ("susceptibility (simulated)", "blip up", "corrected"),
         (scale(up[:, :, middle].numpy()), scale(result.blip_up[:, :, middle].numpy())),
-        dict(cmap="gray", vmin=0, vmax=1.0),
+        {"cmap": "gray", "vmin": 0, "vmax": 1.0},
     )
 
 
@@ -201,19 +273,25 @@ def against_orchestra() -> None:
         return
     image, reference, ours = gradwarp_case()
     flat = (reference.astype(np.float64).ravel(), ours.astype(np.float64).ravel())
-    print(f"vs Orchestra: correlation {np.corrcoef(*flat)[0, 1]:.6f}, "
-          f"nrmse {np.linalg.norm(flat[0] - flat[1]) / np.linalg.norm(flat[0]):.5f}")
+    print(
+        f"vs Orchestra: correlation {np.corrcoef(*flat)[0, 1]:.6f}, "
+        f"nrmse {np.linalg.norm(flat[0] - flat[1]) / np.linalg.norm(flat[0]):.5f}"
+    )
 
     middle = image.shape[2] // 2
     top = np.percentile(image[:, :, middle], 99.5)
     panels = (
-        (image[:, :, middle], "acquired", dict(cmap="gray", vmin=0, vmax=top)),
-        (reference[:, :, middle], "Orchestra", dict(cmap="gray", vmin=0, vmax=top)),
-        (ours[:, :, middle], "mrdistortion", dict(cmap="gray", vmin=0, vmax=top)),
+        (image[:, :, middle], "acquired", {"cmap": "gray", "vmin": 0, "vmax": top}),
+        (
+            reference[:, :, middle],
+            "Orchestra",
+            {"cmap": "gray", "vmin": 0, "vmax": top},
+        ),
+        (ours[:, :, middle], "mrdistortion", {"cmap": "gray", "vmin": 0, "vmax": top}),
         (
             (ours - reference)[:, :, middle],
             "difference, x20",
-            dict(cmap="gray", vmin=-top / 20, vmax=top / 20),
+            {"cmap": "gray", "vmin": -top / 20, "vmax": top / 20},
         ),
     )
     figure, axes = plt.subplots(1, 4, figsize=(13, 3.6))
