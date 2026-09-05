@@ -116,18 +116,18 @@ def geometry_from_corners(first, shape, last=None):
         directions.append(normal)
         fov.append(float(step * shape[2]))
         center = center + normal * step * (shape[2] - 1) / 2
-    return mrd.ImageGeometry(shape, tuple(fov), np.stack(directions, axis=1), center)
+    return shape, tuple(fov), np.stack(directions, axis=1), center
 
 
 def gradwarp_case():
     """The acquired volume, Orchestra's correction, and this package's."""
     archive = np.load(GRADWARP_DATA / f"{CASE}_reference.npz")
     image, reference = archive["image"], archive["reference"]
-    geometry = geometry_from_corners(
-        archive["first_corners"], image.shape, archive["last_corners"]
-    )
-    correct = mrd.Gradunwarp.from_file(
-        GRADWARP_DATA / f"{CASE}_coefficients.dat", geometry
+    correct = mrd.Gradunwarp(
+        GRADWARP_DATA / f"{CASE}_coefficients.dat",
+        *geometry_from_corners(
+            archive["first_corners"], image.shape, archive["last_corners"]
+        ),
     )
     return image, reference, correct(image)
 
@@ -139,17 +139,21 @@ def gradient_column():
         # How well it matches the vendor is figures/gradwarp_vs_orchestra.png.
         archive = np.load(GRADWARP_DATA / f"{CASE}_reference.npz")
         image = archive["image"]
-        geometry = geometry_from_corners(
+        shape, fov_mm, orientation, center = geometry_from_corners(
             archive["first_corners"], image.shape, archive["last_corners"]
         )
-        correct = mrd.Gradunwarp.from_file(
-            GRADWARP_DATA / f"{CASE}_coefficients.dat", geometry
+        correct = mrd.Gradunwarp(
+            GRADWARP_DATA / f"{CASE}_coefficients.dat",
+            shape,
+            fov_mm,
+            orientation,
+            center,
         )
-        grid = correct.sampling_grid()
+        grid = correct.source_grid
         index = np.stack(
             np.meshgrid(*[np.arange(n) for n in image.shape], indexing="ij"), axis=-1
         )
-        spacing = np.array(geometry.fov_mm) / np.array(image.shape)
+        spacing = np.array(fov_mm) / np.array(image.shape)
         displacement = np.linalg.norm((grid - index) * spacing, axis=-1)
         middle = image.shape[2] // 2
         print(
@@ -166,13 +170,7 @@ def gradient_column():
             None,
         )
     size = 96
-    geometry = mrd.ImageGeometry(
-        shape=(size,) * 3,
-        fov_mm=(400.0,) * 3,
-        direction=np.eye(3),
-        center_mm=(0.0, 0.0, 0.0),
-    )
-    warp = mrd.Gradunwarp(generic_coil(-0.16), geometry)
+    warp = mrd.Gradunwarp(generic_coil(-0.16), shape=(size,) * 3, fov_mm=(400.0,) * 3)
     lattice = grid_phantom((size,) * 3, spacing=10)
     middle = size // 2
     return (

@@ -64,20 +64,14 @@ def grid_phantom(shape: tuple[int, int, int], spacing: int = 12) -> np.ndarray:
 
 
 # %%
-geometry = mrd.ImageGeometry(
-    shape=SHAPE,
-    fov_mm=(FOV_MM,) * 3,
-    direction=np.eye(3),
-    center_mm=(0.0, 0.0, 0.0),
-)
-correct = mrd.Gradunwarp(generic_coil(), geometry)
+correct = mrd.Gradunwarp(generic_coil(), shape=SHAPE, fov_mm=(FOV_MM,) * 3)
 
 phantom = grid_phantom(SHAPE)
 corrected = correct(phantom)
 
 # %%
 # Where each voxel really was, in millimetres of displacement.
-grid = correct.sampling_grid()
+grid = correct.source_grid
 centre = np.stack(np.meshgrid(*[np.arange(n) for n in SHAPE], indexing="ij"), axis=-1)
 displacement = np.linalg.norm((grid - centre) * (FOV_MM / SHAPE[0]), axis=-1)
 print(

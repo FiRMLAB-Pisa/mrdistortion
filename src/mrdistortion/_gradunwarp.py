@@ -14,6 +14,7 @@ from __future__ import annotations
 import io
 import math
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Protocol, TypeAlias, runtime_checkable
@@ -24,7 +25,6 @@ __all__ = [
     "CoefficientAccessor",
     "GradientCoefficients",
     "Gradunwarp",
-    "ImageGeometry",
 ]
 
 
@@ -367,26 +367,13 @@ class GradientCoefficients:
 
 
 @dataclass(frozen=True)
-class ImageGeometry:
-    """Physical geometry for an image's trailing two or three array axes.
+class _ImageGeometry:
+    """Physical geometry of an image's trailing two or three array axes.
 
     ``direction[:, axis]`` is the unit scanner-coordinate vector followed when
-    the corresponding NumPy image index increases.  ``fov_mm`` is independent
-    of matrix size, so a zero-filled reconstruction must use its *actual*
-    output ``shape`` with the unchanged physical FOV.
-
-    Examples
-    --------
-    >>> import numpy as np
-    >>> import mrdistortion as mrd
-    >>> geometry = mrd.ImageGeometry(
-    ...     shape=(4, 4, 4),
-    ...     fov_mm=(240.0, 240.0, 240.0),
-    ...     direction=np.eye(3),
-    ...     center_mm=(0.0, 0.0, 0.0),
-    ... )
-    >>> geometry.shape, geometry.fov_mm[0]
-    ((4, 4, 4), 240.0)
+    the corresponding NumPy image index increases. ``fov_mm`` is independent of
+    matrix size, so a zero-filled reconstruction uses its *actual* output
+    ``shape`` with the unchanged physical field of view.
     """
 
     shape: tuple[int, ...]
@@ -400,7 +387,7 @@ class ImageGeometry:
         direction = np.array(self.direction, dtype=np.float64, copy=True)
         center = np.array(self.center_mm, dtype=np.float64, copy=True)
         if len(shape) not in (2, 3):
-            raise ValueError("ImageGeometry supports two or three spatial axes.")
+            raise ValueError("Geometry supports two or three spatial axes.")
         if len(fov) != len(shape) or any(value <= 0 for value in fov):
             raise ValueError("fov_mm must contain one positive value per axis.")
         if any(value <= 0 for value in shape):
@@ -460,7 +447,7 @@ class ImageGeometry:
         cls,
         affine: np.ndarray,
         shape: tuple[int, ...],
-    ) -> ImageGeometry:
+    ) -> _ImageGeometry:
         """Create geometry from a voxel-centre-to-scanner affine."""
         shape = tuple(int(value) for value in shape)
         if len(shape) not in (2, 3):
@@ -490,7 +477,7 @@ class ImageGeometry:
         shape: tuple[int, ...],
         *,
         field_of_view_mm: tuple[float, ...] | None = None,
-    ) -> ImageGeometry:
+    ) -> _ImageGeometry:
         """Create geometry from a vendor-neutral MRD image header.
 
         MRD image arrays conventionally store spatial axes as ``(y, x)`` or
@@ -680,27 +667,103 @@ def _evaluate_dat_harmonics(
     return 10.0 * result
 
 
+_COEFFICIENT_PARAMETER_NAMES = (
+    "gradientcoefficients",
+    "gradient_coefficients",
+    "gradunwarp_coefficients",
+    "coeff_dat",
+    "coefficients",
+)
+
+
+def _coefficients_from_header(header: Any) -> str | None:
+    """Find a coil table among an MRD header's user parameters."""
+    parameters = getattr(
+        getattr(header, "userParameters", None), "userParameterString", None
+    )
+    for parameter in parameters or ():
+        name = str(getattr(parameter, "name", "")).strip().lower()
+        if name in _COEFFICIENT_PARAMETER_NAMES or (
+            "coef" in name and ("grad" in name or "coil" in name)
+        ):
+            value = getattr(parameter, "value", None)
+            if value:
+                return str(value)
+    return None
+
+
 class Gradunwarp:
-    """Callable gradient-nonlinearity correction for 2D or 3D images.
+    r"""Correct gradient nonlinearity, from a coefficient table and a geometry.
+
+    A gradient's field departs from linearity away from isocentre. The
+    departure is a property of the coil, stated once by its manufacturer as a
+    spherical-harmonic table, so the correction is deterministic: evaluate the
+    harmonics over the acquired grid to find where each voxel really was, and
+    resample.
 
     Parameters
     ----------
     coefficients
-        Parsed neutral spherical-harmonic coefficients.
-    input_geometry
-        Physical geometry of the trailing image axes.
-    output_geometry
-        Desired corrected grid.  Defaults to ``input_geometry``.  Supplying a
-        different geometry supports simultaneous correction and resampling.
+        The coil's table, as a path, as the file's own text or bytes, as
+        something satisfying :class:`CoefficientAccessor`, or as an already
+        parsed :class:`GradientCoefficients`. A path and its contents are told
+        apart by looking for a line break, so either goes here.
+    shape
+        Matrix size of the image, ``(nz, ny, nx)`` or ``(ny, nx)``, in the
+        order the array is indexed.
+    fov_mm
+        Field of view in millimetres, one value per axis of ``shape`` and in
+        the same order. It is independent of matrix size, so a zero-filled
+        reconstruction passes its *actual* shape with the unchanged field of
+        view.
+    orientation
+        ``(3, ndim)``: column ``axis`` is the unit scanner-coordinate vector
+        followed when that image index increases. Defaults to the identity,
+        which is an axial acquisition read along scanner x.
+    center_mm
+        Scanner coordinates of the image centre. Defaults to isocentre.
+    target_shape, target_fov_mm
+        The grid to correct *onto*, if it is not the acquired one. Correcting
+        and reslicing together interpolates the image once rather than twice.
+        Both default to the acquired values, and the orientation and centre are
+        shared.
     jacobian
-        Apply the full 3D Jacobian intensity multiplier, including when
-        sampling a single 2D plane.
+        Multiply by the determinant of the mapping, which conserves the signal
+        a voxel carries as the voxel changes size. On by default.
+    coefficient_format
+        ``"dat"``, ``"grad"``, ``"coef"``, or ``"auto"`` to recognise it.
+    reference_radius_mm
+        ``R0`` for a normalised table that does not state it.
+
+    Attributes
+    ----------
+    source_grid : numpy.ndarray
+        ``(*target_shape, ndim)`` floating indices into the acquired image:
+        where each corrected voxel is read from.
+    target_grid : numpy.ndarray
+        ``(*target_shape, 3)`` scanner coordinates in millimetres of the grid
+        being corrected onto.
+    jacobian_grid : numpy.ndarray
+        The intensity multiplier, or ones when ``jacobian`` is off.
 
     Examples
     --------
-    What a real gradient does to the edge of a large field of view, and what
-    undoing it moves. The shift grows with distance from isocentre, which is
-    why a head-sized acquisition sees almost none of it:
+    A coil's table and the geometry the image was acquired on:
+
+    >>> import tempfile
+    >>> from pathlib import Path
+    >>> import numpy as np
+    >>> import mrdistortion as mrd
+    >>> table = Path(tempfile.mkdtemp()) / "coil.grad"
+    >>> _ = table.write_text(
+    ...     "0.25 m = R0\n"
+    ...     "  1 A( 1, 0)   1.000000  x\n"
+    ...     "  2 A( 3, 0)  -0.025000  x\n"
+    ... )
+    >>> correct = mrd.Gradunwarp(table, shape=(8, 16, 16), fov_mm=(80.0, 240.0, 240.0))
+    >>> corrected = correct(np.zeros((8, 16, 16)))
+    >>> corrected.shape, correct.source_grid.shape, correct.target_grid.shape
+    ((8, 16, 16), (8, 16, 16, 3), (8, 16, 16, 3))
 
     .. plot::
 
@@ -712,19 +775,16 @@ class Gradunwarp:
        beta = np.zeros_like(alpha)
        alpha[0, 3, 1] = 8e-5
        beta[1, 3, 1] = 8e-5
-       geometry = mrd.ImageGeometry(
-           (64, 64),
-           (400.0, 400.0),
-           np.asarray(((1.0, 0.0), (0.0, 1.0), (0.0, 0.0))),
-           np.zeros(3),
-       )
        correct = mrd.Gradunwarp(
-           mrd.GradientCoefficients("unnormalized", alpha, beta), geometry
+           mrd.GradientCoefficients("unnormalized", alpha, beta),
+           shape=(64, 64),
+           fov_mm=(400.0, 400.0),
+           orientation=np.asarray(((1.0, 0.0), (0.0, 1.0), (0.0, 0.0))),
        )
 
        acquired = phantom(64)[0][0].numpy().real.astype(np.float32)
        grid = np.stack(np.meshgrid(np.arange(64), np.arange(64), indexing="ij"), -1)
-       shift = np.linalg.norm(correct.sampling_grid() - grid, axis=-1)
+       shift = np.linalg.norm(correct.source_grid - grid, axis=-1)
        images(
            [("as acquired", acquired), ("unwarped", correct(acquired)),
             ("shift [px]", shift)],
@@ -734,45 +794,218 @@ class Gradunwarp:
 
     def __init__(
         self,
-        coefficients: GradientCoefficients,
-        input_geometry: ImageGeometry,
-        output_geometry: ImageGeometry | None = None,
+        coefficients: CoefficientSource | GradientCoefficients,
+        shape: Sequence[int],
+        fov_mm: Sequence[float],
+        orientation: np.ndarray | None = None,
+        center_mm: Sequence[float] = (0.0, 0.0, 0.0),
         *,
+        target_shape: Sequence[int] | None = None,
+        target_fov_mm: Sequence[float] | None = None,
         jacobian: bool = True,
+        coefficient_format: CoefficientFormat = "auto",
+        reference_radius_mm: float | None = None,
     ) -> None:
-        output_geometry = output_geometry or input_geometry
-        if input_geometry.ndim != output_geometry.ndim:
-            raise ValueError("Input and output geometry dimensionality must match.")
+        if not isinstance(coefficients, GradientCoefficients):
+            coefficients = GradientCoefficients.from_file(
+                coefficients,
+                coefficient_format=coefficient_format,
+                reference_radius_mm=reference_radius_mm,
+            )
         self.coefficients = coefficients
-        self.input_geometry = input_geometry
-        self.output_geometry = output_geometry
+
+        shape = tuple(int(value) for value in shape)
+        if orientation is None:
+            orientation = np.eye(3)[:, : len(shape)]
+        acquired = _ImageGeometry(shape, tuple(fov_mm), orientation, center_mm)
+        target = _ImageGeometry(
+            shape if target_shape is None else tuple(int(v) for v in target_shape),
+            tuple(fov_mm if target_fov_mm is None else target_fov_mm),
+            orientation,
+            center_mm,
+        )
+        if acquired.ndim != target.ndim:
+            raise ValueError("The acquired and target grids must have the same rank.")
+        self._acquired = acquired
+        self._target = target
         self.jacobian = bool(jacobian)
         self._source_indices: np.ndarray | None = None
         self._jacobian_multiplier: np.ndarray | None = None
         self._simpleitk_cache: tuple[object, object] | None = None
 
     @classmethod
-    def from_file(
+    def from_mrd(
         cls,
-        coefficient_source: CoefficientSource,
-        input_geometry: ImageGeometry,
-        output_geometry: ImageGeometry | None = None,
+        header: Any,
+        acquisition: Any,
         *,
-        coefficient_format: CoefficientFormat = "auto",
-        reference_radius_mm: float | None = None,
-        **kwargs: object,
+        coefficients: CoefficientSource | GradientCoefficients | None = None,
+        **kwargs: Any,
     ) -> Gradunwarp:
-        """Construct from a coefficient path, serialized text, or MRD accessor."""
+        r"""Build the correction from an MRD header and one acquisition.
+
+        Everything the correction needs is already in the stream. The
+        acquisition says which encoding it belongs to and how the image is
+        oriented in the scanner; that encoding's reconstruction space says how
+        big the image is and how much of the patient it covers.
+
+        Parameters
+        ----------
+        header
+            The MRD XML header. ``header.encoding[k].reconSpace`` supplies the
+            matrix size and field of view, and the coil's table is read from
+            ``header.userParameters.userParameterString`` when a parameter
+            named for the gradient coefficients is present.
+        acquisition
+            One representative acquisition, or its head.
+            ``encoding_space_ref`` selects the encoding, ``read_dir``,
+            ``phase_dir`` and ``slice_dir`` give the orientation, and
+            ``position`` the centre.
+        coefficients
+            The table, for a stream that does not carry one. Overrides the
+            header when both are present.
+        **kwargs
+            Passed to the constructor: ``target_shape``, ``jacobian`` and the
+            rest.
+
+        Raises
+        ------
+        ValueError
+            If the acquisition names an encoding the header does not have, or
+            if no coefficients are found in either place.
+
+        Examples
+        --------
+        >>> from types import SimpleNamespace as ns
+        >>> import mrdistortion as mrd
+        >>> table = "0.25 m = R0\n  1 A( 1, 0)  1.0  x\n  2 A( 3, 0) -0.025  x\n"
+        >>> header = ns(
+        ...     encoding=[ns(reconSpace=ns(
+        ...         matrixSize=ns(x=64, y=64, z=8),
+        ...         fieldOfView_mm=ns(x=240.0, y=240.0, z=80.0),
+        ...     ))],
+        ...     userParameters=ns(
+        ...         userParameterString=[ns(name="GradientCoefficients", value=table)]
+        ...     ),
+        ... )
+        >>> acquisition = ns(
+        ...     encoding_space_ref=0,
+        ...     read_dir=(1.0, 0.0, 0.0),
+        ...     phase_dir=(0.0, 1.0, 0.0),
+        ...     slice_dir=(0.0, 0.0, 1.0),
+        ...     position=(0.0, 0.0, 0.0),
+        ... )
+        >>> correct = mrd.Gradunwarp.from_mrd(header, acquisition)
+        >>> correct.target_grid.shape[:-1]
+        (8, 64, 64)
+        """
+        # An MRD Acquisition proxies its head's fields; a bare head does not.
+        head = acquisition
+        if not hasattr(head, "read_dir") and not hasattr(head, "col_dir"):
+            head = getattr(acquisition, "head", acquisition)
+        index = int(getattr(head, "encoding_space_ref", 0) or 0)
+        encodings = list(getattr(header, "encoding", []) or [])
+        if index >= len(encodings):
+            raise ValueError(
+                f"The acquisition names encoding {index}, and the header has "
+                f"{len(encodings)}."
+            )
+        recon = encodings[index].reconSpace
+        matrix, extent = recon.matrixSize, recon.fieldOfView_mm
+
+        def direction(*names: str) -> np.ndarray:
+            for name in names:
+                value = getattr(head, name, None)
+                if value is not None:
+                    vector = np.asarray(value, dtype=np.float64).ravel()
+                    if vector.shape == (3,):
+                        return vector
+            raise ValueError(f"The acquisition is missing {names[0]!r}.")
+
+        # MRD states x along the readout; a reconstructed array is indexed
+        # (slice, line, column), which is the reverse.
+        shape = (int(matrix.z), int(matrix.y), int(matrix.x))
+        fov_mm = (float(extent.z), float(extent.y), float(extent.x))
+        orientation = np.stack(
+            [
+                direction("slice_dir"),
+                direction("phase_dir", "line_dir"),
+                direction("read_dir", "col_dir"),
+            ],
+            axis=1,
+        )
+        center = getattr(head, "position", (0.0, 0.0, 0.0))
+
+        if coefficients is None:
+            coefficients = _coefficients_from_header(header)
+        if coefficients is None:
+            raise ValueError(
+                "No gradient coefficients in the header's userParameters; pass "
+                "coefficients=."
+            )
         return cls(
-            GradientCoefficients.from_file(
-                coefficient_source,
-                coefficient_format=coefficient_format,
-                reference_radius_mm=reference_radius_mm,
-            ),
-            input_geometry,
-            output_geometry,
+            coefficients,
+            shape,
+            fov_mm,
+            orientation,
+            np.asarray(center, dtype=np.float64).ravel(),
             **kwargs,
         )
+
+    @classmethod
+    def from_affine(
+        cls,
+        coefficients: CoefficientSource | GradientCoefficients,
+        affine: np.ndarray,
+        shape: Sequence[int],
+        **kwargs: Any,
+    ) -> Gradunwarp:
+        """Build the correction from a voxel-centre-to-scanner affine.
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> import mrdistortion as mrd
+        >>> alpha = np.zeros((3, 4, 4))
+        >>> alpha[0, 3, 1] = 8e-5
+        >>> table = mrd.GradientCoefficients("unnormalized", alpha, np.zeros_like(alpha))
+        >>> affine = np.diag([2.0, 2.0, 5.0, 1.0])
+        >>> correct = mrd.Gradunwarp.from_affine(table, affine, (32, 32, 8))
+        >>> correct.target_grid.shape
+        (32, 32, 8, 3)
+        """
+        geometry = _ImageGeometry.from_affine(affine, shape)
+        return cls(
+            coefficients,
+            geometry.shape,
+            geometry.fov_mm,
+            geometry.direction,
+            geometry.center_mm,
+            **kwargs,
+        )
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        """Matrix size of the corrected image."""
+        return self._target.shape
+
+    @property
+    def source_grid(self) -> np.ndarray:
+        """Floating indices into the acquired image, one per corrected voxel."""
+        return self._prepare_grid()
+
+    @property
+    def target_grid(self) -> np.ndarray:
+        """Scanner coordinates in millimetres of the grid being corrected onto."""
+        return self._target.scanner_grid()
+
+    @property
+    def jacobian_grid(self) -> np.ndarray:
+        """The intensity multiplier, or ones when ``jacobian`` is off."""
+        self._prepare_grid()
+        if self._jacobian_multiplier is None:
+            return np.ones(self._target.shape, dtype=np.float64)
+        return self._jacobian_multiplier
 
     def clear_cache(self) -> None:
         """Drop the cached physical sampling grid and Jacobian."""
@@ -780,29 +1013,15 @@ class Gradunwarp:
         self._jacobian_multiplier = None
         self._simpleitk_cache = None
 
-    def sampling_grid(self, *, copy: bool = True) -> np.ndarray:
-        """Return floating input indices sampled for every output voxel."""
-        indices = self._prepare_grid()
-        return indices.copy() if copy else indices
-
-    def jacobian_grid(self, *, copy: bool = True) -> np.ndarray:
-        """Return the cached full-3D Jacobian intensity multiplier."""
-        self._prepare_grid()
-        if self._jacobian_multiplier is None:
-            value = np.ones(self.output_geometry.shape, dtype=np.float64)
-        else:
-            value = self._jacobian_multiplier
-        return value.copy() if copy else value
-
     def _prepare_grid(self) -> np.ndarray:
         """Return the sampling grid, computing it the first time it is asked for."""
         if self._source_indices is not None:
             return self._source_indices
-        coordinates = self.output_geometry.scanner_grid()
+        coordinates = self._target.scanner_grid()
         field = _evaluate_harmonics(self.coefficients, coordinates)
         displacement = self.coefficients.mapping_sign * field
         source_coordinates = coordinates + displacement
-        source_indices = self.input_geometry.scanner_to_indices(source_coordinates)
+        source_indices = self._acquired.scanner_to_indices(source_coordinates)
         source_indices.setflags(write=False)
         self._source_indices = source_indices
 
@@ -817,7 +1036,7 @@ class Gradunwarp:
         coordinates: np.ndarray,
         displacement: np.ndarray,
     ) -> np.ndarray:
-        geometry = self.output_geometry
+        geometry = self._target
         if geometry.ndim == 3:
             return self._simpleitk_jacobian(displacement)
 
@@ -871,7 +1090,7 @@ class Gradunwarp:
         """Compute a 3D physical Jacobian with SimpleITK's compiled filter."""
         import SimpleITK as sitk
 
-        geometry = self.output_geometry
+        geometry = self._target
         displacement_in_image_basis = displacement @ geometry.direction
         field = sitk.GetImageFromArray(
             np.ascontiguousarray(displacement_in_image_basis[..., ::-1]),
@@ -887,11 +1106,11 @@ class Gradunwarp:
         return self._call_simpleitk(image)
 
     def _validate_shape(self, shape: tuple[int, ...]) -> None:
-        ndim = self.input_geometry.ndim
-        if len(shape) < ndim or tuple(shape[-ndim:]) != self.input_geometry.shape:
+        ndim = self._acquired.ndim
+        if len(shape) < ndim or tuple(shape[-ndim:]) != self._acquired.shape:
             raise ValueError(
-                "Image trailing shape must match input_geometry.shape "
-                f"{self.input_geometry.shape}, got {shape}."
+                "The image's trailing shape must match the acquired matrix "
+                f"{self._acquired.shape}, got {shape}."
             )
 
     def _call_simpleitk(self, image: object) -> np.ndarray:
@@ -901,14 +1120,14 @@ class Gradunwarp:
         self._validate_shape(array.shape)
         if not (np.issubdtype(array.dtype, np.inexact) or np.iscomplexobj(array)):
             array = array.astype(np.float32)
-        ndim = self.input_geometry.ndim
+        ndim = self._acquired.ndim
         leading_shape = array.shape[:-ndim]
         batch = math.prod(leading_shape) if leading_shape else 1
-        values = array.reshape((batch, *self.input_geometry.shape))
+        values = array.reshape((batch, *self._acquired.shape))
 
         if self._simpleitk_cache is None:
             output_indices = np.moveaxis(
-                np.indices(self.output_geometry.shape, dtype=np.float64),
+                np.indices(self._target.shape, dtype=np.float64),
                 0,
                 -1,
             )
@@ -919,7 +1138,7 @@ class Gradunwarp:
             )
             transform = sitk.DisplacementFieldTransform(field)
             reference = sitk.Image(
-                list(reversed(self.output_geometry.shape)),
+                list(reversed(self._target.shape)),
                 sitk.sitkFloat32,
             )
             self._simpleitk_cache = (transform, reference)
@@ -941,7 +1160,7 @@ class Gradunwarp:
                 output.append(sample(value.real) + 1j * sample(value.imag))
             else:
                 output.append(sample(value))
-        result = np.stack(output).reshape(leading_shape + self.output_geometry.shape)
+        result = np.stack(output).reshape(leading_shape + self._target.shape)
         if self._jacobian_multiplier is not None:
             result *= self._jacobian_multiplier.astype(result.dtype, copy=False)
         return result

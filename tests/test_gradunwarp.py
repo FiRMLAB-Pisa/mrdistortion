@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from mrdistortion import GradientCoefficients, Gradunwarp, ImageGeometry
+from mrdistortion import GradientCoefficients, Gradunwarp
 from mrdistortion._gradunwarp import _evaluate_harmonics
 
 
@@ -86,42 +86,82 @@ def test_normalized_coefficient_parser_reads_radius_and_general_degrees() -> Non
     assert coefficients.beta[1, 5, 3] == -0.03
 
 
-def test_mrd_geometry_uses_reconstructed_matrix_for_zero_fill() -> None:
-    header = SimpleNamespace(
-        field_of_view=(240.0, 240.0, 5.0),
-        position=(10.0, -20.0, 4.0),
+def _mrd_header(table: str | None = "", encodings: int = 1):
+    """An MRD XML header, with as much of it as this correction reads."""
+    user = SimpleNamespace(
+        userParameterString=[SimpleNamespace(name="GradientCoefficients", value=table)]
+        if table is not None
+        else []
+    )
+    encoding = [
+        SimpleNamespace(
+            reconSpace=SimpleNamespace(
+                matrixSize=SimpleNamespace(x=16 + index, y=12, z=4),
+                fieldOfView_mm=SimpleNamespace(x=240.0, y=180.0, z=60.0),
+            )
+        )
+        for index in range(encodings)
+    ]
+    return SimpleNamespace(encoding=encoding, userParameters=user)
+
+
+def _mrd_acquisition(encoding: int = 0):
+    return SimpleNamespace(
+        encoding_space_ref=encoding,
         read_dir=(-1.0, 0.0, 0.0),
         phase_dir=(0.0, 1.0, 0.0),
         slice_dir=(0.0, 0.0, 1.0),
+        position=(10.0, -20.0, 4.0),
     )
 
-    geometry = ImageGeometry.from_mrd(header, (256, 512))
 
-    np.testing.assert_allclose(geometry.fov_mm, (240.0, 240.0))
-    np.testing.assert_allclose(geometry.voxel_size_mm, (240 / 256, 240 / 512))
+def test_from_mrd_reads_the_recon_space_of_the_encoding_the_acquisition_names():
+    """The matrix and field of view come from the encoding, not the acquisition."""
+    correct = Gradunwarp.from_mrd(
+        _mrd_header(_dat_payload(), encodings=3), _mrd_acquisition(encoding=2)
+    )
+
+    # MRD states x along the readout; the array is indexed (slice, line, column).
+    assert correct.shape == (4, 12, 18)
+    np.testing.assert_allclose(correct.target_grid.shape, (4, 12, 18, 3))
+
+
+def test_from_mrd_takes_the_orientation_and_centre_from_the_acquisition() -> None:
+    correct = Gradunwarp.from_mrd(_mrd_header(_dat_payload()), _mrd_acquisition())
+
+    # Columns follow (slice, line, column), so read_dir is the last of them.
     np.testing.assert_allclose(
-        geometry.direction,
-        np.asarray(((0.0, -1.0), (1.0, 0.0), (0.0, 0.0))),
-    )
-    np.testing.assert_allclose(geometry.center_mm, header.position)
-
-
-def test_mrd_geometry_supports_new_binding_and_3d_axis_order() -> None:
-    header = SimpleNamespace(
-        field_of_view=np.asarray((60.0, 80.0, 20.0)),
-        position=np.asarray((1.0, 2.0, 3.0)),
-        col_dir=np.asarray((-1.0, 0.0, 0.0)),
-        line_dir=np.asarray((0.0, 1.0, 0.0)),
-        slice_dir=np.asarray((0.0, 0.0, 1.0)),
-    )
-
-    geometry = ImageGeometry.from_mrd(header, (10, 40, 30))
-
-    np.testing.assert_allclose(geometry.voxel_size_mm, (2.0, 2.0, 2.0))
-    np.testing.assert_allclose(
-        geometry.direction,
+        correct._acquired.direction,
         np.asarray(((0.0, 0.0, -1.0), (0.0, 1.0, 0.0), (1.0, 0.0, 0.0))),
     )
+    np.testing.assert_allclose(correct._acquired.center_mm, (10.0, -20.0, 4.0))
+
+
+def test_from_mrd_reads_the_coil_table_out_of_the_user_parameters() -> None:
+    correct = Gradunwarp.from_mrd(_mrd_header(_dat_payload()), _mrd_acquisition())
+
+    assert correct.coefficients.max_order == 9
+
+
+def test_from_mrd_accepts_a_table_a_stream_does_not_carry() -> None:
+    """A site whose coefficients travel separately passes them in."""
+    correct = Gradunwarp.from_mrd(
+        _mrd_header(table=None),
+        _mrd_acquisition(),
+        coefficients=StubAccessor(_dat_payload()),
+    )
+
+    assert correct.coefficients.max_order == 9
+
+
+def test_from_mrd_refuses_a_stream_with_no_table_anywhere() -> None:
+    with pytest.raises(ValueError, match="No gradient coefficients"):
+        Gradunwarp.from_mrd(_mrd_header(table=None), _mrd_acquisition())
+
+
+def test_from_mrd_refuses_an_encoding_the_header_does_not_have() -> None:
+    with pytest.raises(ValueError, match="names encoding 2"):
+        Gradunwarp.from_mrd(_mrd_header(_dat_payload()), _mrd_acquisition(encoding=2))
 
 
 def test_affine_geometry_preserves_oblique_physical_grid() -> None:
@@ -138,13 +178,13 @@ def test_affine_geometry_preserves_oblique_physical_grid() -> None:
     affine[:3, 3] = (4.0, -5.0, 6.0)
     shape = (8, 10, 12)
 
-    geometry = ImageGeometry.from_affine(affine, shape)
-    index = np.asarray((2.0, 3.0, 4.0))
+    correct = Gradunwarp.from_affine(_zero_coefficients(), affine, shape)
+    index = (2, 3, 4)
 
-    expected = (affine @ np.append(index, 1.0))[:3]
-    np.testing.assert_allclose(geometry.indices_to_scanner(index), expected)
-    np.testing.assert_allclose(geometry.scanner_to_indices(expected), index)
-    np.testing.assert_allclose(geometry.fov_mm, (9.6, 15.0, 24.0))
+    expected = (affine @ np.append(np.asarray(index, dtype=float), 1.0))[:3]
+    np.testing.assert_allclose(correct.target_grid[index], expected, atol=1e-10)
+    np.testing.assert_allclose(correct._acquired.scanner_to_indices(expected), index)
+    np.testing.assert_allclose(correct._acquired.fov_mm, (9.6, 15.0, 24.0))
 
 
 def test_zero_coefficients_are_identity_for_real_and_complex_batches() -> None:
@@ -156,46 +196,37 @@ def test_zero_coefficients_are_identity_for_real_and_complex_batches() -> None:
             (0.0, 0.0),
         )
     )
-    geometry = ImageGeometry((7, 8), (70.0, 80.0), direction, np.zeros(3))
-    correct = Gradunwarp(_zero_coefficients(), geometry)
+    correct = Gradunwarp(_zero_coefficients(), (7, 8), (70.0, 80.0), direction)
     rng = np.random.default_rng(4)
-    image = rng.normal(size=(2, *geometry.shape)).astype(np.float32)
+    image = rng.normal(size=(2, *correct.shape)).astype(np.float32)
     complex_image = image + 1j * image[::-1]
 
     np.testing.assert_allclose(correct(image), image, atol=2e-5)
     np.testing.assert_allclose(correct(complex_image), complex_image, atol=2e-5)
-    np.testing.assert_allclose(correct.jacobian_grid(), 1.0)
+    np.testing.assert_allclose(correct.jacobian_grid, 1.0)
 
 
-def test_output_geometry_controls_cubic_resampling_grid() -> None:
-    input_geometry = ImageGeometry(
-        (9, 9),
-        (90.0, 90.0),
-        np.asarray(((1.0, 0.0), (0.0, 1.0), (0.0, 0.0))),
-        np.zeros(3),
-    )
-    output_geometry = ImageGeometry(
-        (17, 17),
-        (80.0, 80.0),
-        input_geometry.direction,
-        np.zeros(3),
-    )
-    physical = input_geometry.scanner_grid()
-    image = (2.0 * physical[..., 0] - 3.0 * physical[..., 1] + 7.0).astype(np.float32)
+def test_a_target_grid_corrects_and_reslices_in_one_step() -> None:
+    direction = np.asarray(((1.0, 0.0), (0.0, 1.0), (0.0, 0.0)))
     correct = Gradunwarp(
         _zero_coefficients(),
-        input_geometry,
-        output_geometry,
+        (9, 9),
+        (90.0, 90.0),
+        direction,
+        target_shape=(17, 17),
+        target_fov_mm=(80.0, 80.0),
         jacobian=False,
     )
+    acquired = Gradunwarp(_zero_coefficients(), (9, 9), (90.0, 90.0), direction)
+    physical = acquired.target_grid
+    image = (2.0 * physical[..., 0] - 3.0 * physical[..., 1] + 7.0).astype(np.float32)
 
     result = correct(image)
-    expected_grid = output_geometry.scanner_grid()
-    expected_indices = input_geometry.scanner_to_indices(expected_grid)
+    expected = acquired._acquired.scanner_to_indices(correct.target_grid)
 
-    assert result.shape == output_geometry.shape
+    assert result.shape == (17, 17)
     assert np.isfinite(result).all()
-    np.testing.assert_allclose(correct.sampling_grid(), expected_indices, atol=1e-12)
+    np.testing.assert_allclose(correct.source_grid, expected, atol=1e-12)
 
 
 def test_full_3d_jacobian_is_used_for_a_2d_plane() -> None:
@@ -203,17 +234,16 @@ def test_full_3d_jacobian_is_used_for_a_2d_plane() -> None:
     beta = np.zeros_like(alpha)
     alpha[0, 1, 1] = 0.01
     coefficients = GradientCoefficients("unnormalized", alpha, beta)
-    geometry = ImageGeometry(
+    correct = Gradunwarp(
+        coefficients,
         (11, 12),
         (110.0, 120.0),
         np.asarray(((1.0, 0.0), (0.0, 1.0), (0.0, 0.0))),
-        np.zeros(3),
     )
-    correct = Gradunwarp(coefficients, geometry)
 
     # P_1^1(cos(theta)) cos(phi) * r = -x. The output-to-source
     # convention therefore yields source_x = 1.01*x and determinant 1.01.
-    np.testing.assert_allclose(correct.jacobian_grid(), 1.01, atol=2e-8)
+    np.testing.assert_allclose(correct.jacobian_grid, 1.01, atol=2e-8)
 
 
 def test_cartesian_dat_recurrence_matches_second_order_solid_harmonics() -> None:
@@ -257,9 +287,9 @@ def test_compiled_3d_jacobian_uses_all_three_physical_derivatives() -> None:
             (0.0, 0.0, 1.0),
         )
     )
-    geometry = ImageGeometry((9, 10, 11), (90.0, 100.0, 110.0), direction, np.zeros(3))
-
-    determinant = Gradunwarp(coefficients, geometry).jacobian_grid()
+    determinant = Gradunwarp(
+        coefficients, (9, 10, 11), (90.0, 100.0, 110.0), direction
+    ).jacobian_grid
 
     np.testing.assert_allclose(
         determinant[1:-1, 1:-1, 1:-1],
@@ -268,16 +298,13 @@ def test_compiled_3d_jacobian_uses_all_three_physical_derivatives() -> None:
     )
 
 
-def test_from_file_accepts_mrd_transport_directly() -> None:
-    geometry = ImageGeometry(
+def test_the_constructor_accepts_a_coefficient_accessor_directly() -> None:
+    correct = Gradunwarp(
+        StubAccessor(_dat_payload()),
         (8, 9),
         (80.0, 90.0),
         np.asarray(((1.0, 0.0), (0.0, 1.0), (0.0, 0.0))),
-        np.zeros(3),
     )
-    accessor = StubAccessor(_dat_payload())
-
-    correct = Gradunwarp.from_file(accessor, geometry)
 
     assert correct.coefficients.max_order == 9
 

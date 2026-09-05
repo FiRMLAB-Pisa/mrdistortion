@@ -63,13 +63,19 @@ pip install mrdistortion[epi]     # susceptibility, through PyHySCO (GPL-3.0)
 import mrdistortion as mrd
 
 # gradient nonlinearity: the coil's table, the grid the image sits on, unwarp
-coefficients = mrd.GradientCoefficients.from_file("coil.dat")  # or .grad, .coef
-geometry = mrd.ImageGeometry(shape, fov_mm, direction, center_mm)
-unwarped = mrd.Gradunwarp(coefficients, geometry)(image)
+# The table is a path, or the file's own text -- a scanner sends the text.
+correct = mrd.Gradunwarp("coil.dat", shape, fov_mm, orientation, center_mm)
+unwarped = correct(volume)
 
-# what it moves, before it moves anything: indices, and Jacobian intensity
-correct = mrd.Gradunwarp(coefficients, geometry, target_geometry)
-grid, intensity = correct.sampling_grid(), correct.jacobian_grid()
+# straight off an MRD stream: the encoding the acquisition names supplies the
+# matrix and field of view, the acquisition its orientation, and the header its
+# coefficients if it carries any
+correct = mrd.Gradunwarp.from_mrd(header, acquisition)      # coefficients= if not
+correct = mrd.Gradunwarp.from_affine(table, affine, shape)  # or from an affine
+
+# what it moves, before it moves anything, and correcting onto another grid
+correct.source_grid, correct.target_grid, correct.jacobian_grid
+resliced = mrd.Gradunwarp("coil.dat", shape, fov_mm, target_shape=(256, 256, 256))
 
 # off-resonance, straight from the phase of single-echo coil images
 field = mrd.field_map_from_phase(coil_images, echo_time=0.7e-3)

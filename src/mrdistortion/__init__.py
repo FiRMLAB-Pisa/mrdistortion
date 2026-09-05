@@ -24,12 +24,7 @@ from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _distribution_version
 
 from ._fieldmap import field_map_from_phase
-from ._gradunwarp import (
-    CoefficientAccessor,
-    GradientCoefficients,
-    Gradunwarp,
-    ImageGeometry,
-)
+from ._gradunwarp import CoefficientAccessor, GradientCoefficients, Gradunwarp
 from ._pyhysco import SusceptibilityCorrection, correct_susceptibility
 from ._spiral import ReadoutTiming, SpiralTransfer, deblur, fit_transfer
 
@@ -42,7 +37,6 @@ __all__ = [
     "CoefficientAccessor",
     "GradientCoefficients",
     "Gradunwarp",
-    "ImageGeometry",
     "ReadoutTiming",
     "SpiralTransfer",
     "SusceptibilityCorrection",

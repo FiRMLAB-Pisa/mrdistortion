@@ -8,7 +8,7 @@ committed with its outputs, so it opens in Colab.
 
 | example | shows | checked against |
 |---|---|---|
-| [`01-gradient_nonlinearity`](01-gradient_nonlinearity.ipynb) | `GradientCoefficients`, `Gradunwarp`, `sampling_grid` | the displacement the coefficients imply, in millimetres |
+| [`01-gradient_nonlinearity`](01-gradient_nonlinearity.ipynb) | `Gradunwarp`, `source_grid` | the displacement the coefficients imply, in millimetres |
 | [`02-field_map_from_phase`](02-field_map_from_phase.ipynb) | `field_map_from_phase` | two lobes of known amplitude and position |
 | [`03-spiral_deblurring`](03-spiral_deblurring.ipynb) | `ReadoutTiming`, `fit_transfer`, `deblur` | a blur applied exactly, then removed |
 | [`04-susceptibility`](04-susceptibility.ipynb) | `correct_susceptibility` | the agreement between the two polarities |
